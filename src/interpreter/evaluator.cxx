@@ -1,0 +1,1519 @@
+#include "evaluator.hxx"
+#include "../lexer/lexer.hxx"
+#include "../parser/parser.hxx"
+#include <iostream>
+
+namespace kex::interpreter {
+
+Evaluator::Evaluator() {
+    m_globalEnv = std::make_shared<Environment>();
+    m_env = m_globalEnv;
+    registerBuiltins();
+}
+
+auto Evaluator::execute(const ast::Program& program) -> ValuePtr {
+    ValuePtr lastResult = Value::none();
+
+    for (const auto& item : program.items) {
+        execTopLevel(item);
+    }
+
+    for (const auto& item : program.items) {
+        if (auto* main = std::get_if<std::unique_ptr<ast::MainBlock>>(&item)) {
+            lastResult = execMainBlock(**main);
+        }
+    }
+
+    return lastResult;
+}
+
+auto Evaluator::setReplMode(bool enabled) -> void {
+    m_replMode = enabled;
+}
+
+auto Evaluator::output() const -> const std::string& {
+    return m_output;
+}
+
+auto Evaluator::execTopLevel(const ast::TopLevelItem& item) -> void {
+    std::visit([this](const auto& node) {
+        using T = std::decay_t<decltype(node)>;
+        if constexpr (std::is_same_v<T, std::unique_ptr<ast::ModuleDef>>) {
+            execModule(*node);
+        } else if constexpr (std::is_same_v<T, std::unique_ptr<ast::FunctionDef>>) {
+            execFunctionDef(*node);
+        } else if constexpr (std::is_same_v<T, std::unique_ptr<ast::MakeDef>>) {
+            execMakeDef(*node);
+        } else if constexpr (std::is_same_v<T, std::unique_ptr<ast::RecordDef>>) {
+            // Register record name as a namespace for static access (e.g. Vector2D.Polar)
+            m_env->define(node->name, Value::record(node->name, {}));
+            if (node->staticBlock) {
+                for (const auto& func : node->staticBlock->functions) {
+                    execFunctionDef(*func);
+                }
+            }
+        } else if constexpr (std::is_same_v<T, std::unique_ptr<ast::TypeDef>>) {
+            if (node->staticBlock) {
+                for (const auto& func : node->staticBlock->functions) {
+                    execFunctionDef(*func);
+                }
+            }
+        }
+    }, item);
+}
+
+auto Evaluator::execModule(const ast::ModuleDef& mod) -> void {
+    for (const auto& item : mod.body) {
+        std::visit([this](const auto& node) {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, std::unique_ptr<ast::FunctionDef>>) {
+                execFunctionDef(*node);
+            } else if constexpr (std::is_same_v<T, std::unique_ptr<ast::ModuleDef>>) {
+                execModule(*node);
+            }
+        }, item);
+    }
+}
+
+auto Evaluator::execFunctionDef(const ast::FunctionDef& def, const std::string& typeScope) -> void {
+    // Collect clauses: if there's already a function with this name, merge
+    auto existing = m_env->get(def.name);
+    std::vector<const ast::FunctionClause*> allClauses;
+
+    // Get clauses from existing definition if it's the same function
+    if (existing) {
+        if (auto* fv = std::get_if<FunctionValue>(&existing->data)) {
+            if (fv->name == def.name && fv->native) {
+                // It's a previous definition with clauses stored in the closure
+                // We'll rebuild with all clauses
+            }
+        }
+    }
+
+    // We store pointers to all known clauses for this function
+    // Since the AST is stable, we collect them via a vector in the closure
+    // For multi-def functions, each call to execFunctionDef appends
+    struct ClauseStore {
+        std::vector<const ast::FunctionDef*> defs;
+    };
+    auto store = std::make_shared<ClauseStore>();
+
+    // If existing, retrieve its store
+    if (existing) {
+        // Can't easily retrieve — just rebuild from this def
+    }
+
+    store->defs.push_back(&def);
+
+    // Check if already defined — merge
+    if (existing) {
+        if (auto* fv = std::get_if<FunctionValue>(&existing->data)) {
+            // Unwrap and rebuild — for simplicity, use a global registry
+        }
+    }
+
+    // Register under mangled name if in a type scope
+    std::string regName = def.name;
+    if (!typeScope.empty()) {
+        regName = typeScope + "::" + def.name;
+    }
+
+    auto& funcDefs = m_functionDefs[regName];
+    funcDefs.push_back(&def);
+
+    auto funcValue = std::make_shared<Value>();
+    auto* defsPtr = &funcDefs;
+    funcValue->data = FunctionValue{def.name, [this, defsPtr](std::vector<ValuePtr> args) -> ValuePtr {
+        for (const auto* funcDef : *defsPtr) {
+            for (const auto& clause : funcDef->clauses) {
+                pushEnv();
+                bool matched = true;
+
+                // If more args than params, first arg is 'this' (UFCS method call)
+                size_t argOffset = 0;
+                if (args.size() > clause.params.size()) {
+                    m_env->define("this", args[0]);
+                    argOffset = 1;
+                }
+
+                for (size_t i = 0; i < clause.params.size() && (i + argOffset) < args.size(); i++) {
+                    const auto& param = clause.params[i];
+                    if (param.pattern && *param.pattern) {
+                        if (!matchPattern(**param.pattern, args[i + argOffset])) {
+                            matched = false;
+                            break;
+                        }
+                    } else if (param.name.has_value()) {
+                        m_env->define(*param.name, args[i + argOffset]);
+                    }
+                }
+
+                if (matched) {
+                    try {
+                        auto result = evalBody(clause.body);
+                        popEnv();
+                        return result;
+                    } catch (ReturnException& ret) {
+                        popEnv();
+                        return ret.value();
+                    }
+                }
+
+                popEnv();
+            }
+        }
+
+        return Value::none();
+    }};
+
+    m_env->define(regName, funcValue);
+}
+
+auto Evaluator::execMakeDef(const ast::MakeDef& def) -> void {
+    // Extract type name from make target
+    std::string typeName;
+    if (def.target) {
+        if (auto* named = std::get_if<ast::TypeName>(&def.target->kind)) {
+            if (!named->parts.empty()) typeName = named->parts[0];
+        } else if (auto* generic = std::get_if<ast::GenericType>(&def.target->kind)) {
+            if (!generic->name.parts.empty()) typeName = generic->name.parts[0];
+        } else if (std::holds_alternative<ast::ListType>(def.target->kind)) {
+            typeName = "List";
+        }
+    }
+
+    for (const auto& item : def.body) {
+        std::visit([this, &typeName](const auto& node) {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, std::unique_ptr<ast::FunctionDef>>) {
+                execFunctionDef(*node, typeName);
+            }
+        }, item);
+    }
+}
+
+auto Evaluator::execMainBlock(const ast::MainBlock& block) -> ValuePtr {
+    if (!m_replMode) pushEnv();
+    ValuePtr result;
+    try {
+        result = evalBody(block.body);
+    } catch (ReturnException& ret) {
+        result = ret.value();
+    }
+    if (!m_replMode) popEnv();
+    return result;
+}
+
+auto Evaluator::evalBody(const std::vector<ast::ExprPtr>& body) -> ValuePtr {
+    ValuePtr last = Value::none();
+    for (const auto& expr : body) {
+        if (expr) last = eval(*expr);
+    }
+    return last;
+}
+
+auto Evaluator::eval(const ast::Expr& expr) -> ValuePtr {
+    return std::visit([this, &expr](const auto& node) -> ValuePtr {
+        using T = std::decay_t<decltype(node)>;
+
+        if constexpr (std::is_same_v<T, ast::IntLiteral>) {
+            return Value::integer(std::stoll(node.value));
+        }
+        else if constexpr (std::is_same_v<T, ast::FloatLiteral>) {
+            return Value::floating(std::stod(node.value));
+        }
+        else if constexpr (std::is_same_v<T, ast::StringLiteral>) {
+            // Handle interpolation: find ${...} and evaluate in current scope
+            std::string result;
+            const auto& s = node.value;
+            size_t i = 0;
+            while (i < s.size()) {
+                if (i + 1 < s.size() && s[i] == '$' && s[i + 1] == '{') {
+                    i += 2;
+                    std::string inner;
+                    int depth = 1;
+                    while (i < s.size() && depth > 0) {
+                        if (s[i] == '{') depth++;
+                        else if (s[i] == '}') { depth--; if (depth == 0) break; }
+                        inner += s[i];
+                        i++;
+                    }
+                    if (i < s.size()) i++; // skip }
+                    // Parse the expression and evaluate directly in current env
+                    try {
+                        kex::Lexer interpLexer(inner);
+                        auto interpTokens = interpLexer.tokenizeAll();
+                        // Parse as a single expression
+                        kex::Parser interpParser(std::move(interpTokens));
+                        auto interpExpr = interpParser.parseExpr();
+                        if (interpExpr) {
+                            auto val = eval(*interpExpr);
+                            result += val->toString();
+                        }
+                    } catch (...) {
+                        // Fallback: try as variable lookup
+                        auto val = m_env->get(inner);
+                        result += val ? val->toString() : inner;
+                    }
+                } else {
+                    result += s[i];
+                    i++;
+                }
+            }
+            return Value::string(result);
+        }
+        else if constexpr (std::is_same_v<T, ast::BoolLiteral>) {
+            return Value::boolean(node.value);
+        }
+        else if constexpr (std::is_same_v<T, ast::NoneLiteral>) {
+            return Value::none();
+        }
+        else if constexpr (std::is_same_v<T, ast::AtomLiteral>) {
+            return Value::atom(node.name);
+        }
+        else if constexpr (std::is_same_v<T, ast::ThisExpr>) {
+            auto val = m_env->get("this");
+            if (!val) {
+                throw RuntimeError("'this' used outside of a method context", expr.location);
+            }
+            return val;
+        }
+        else if constexpr (std::is_same_v<T, ast::Identifier>) {
+            auto val = m_env->get(node.name);
+            if (!val) {
+                throw RuntimeError("Undefined variable: " + node.name, expr.location);
+            }
+            // Auto-call zero-arg functions (constants defined as let name = expr)
+            // Only auto-call if the function is registered as having 0 params
+            if (auto* func = std::get_if<FunctionValue>(&val->data)) {
+                if (func->native) {
+                    auto defIt = m_functionDefs.find(node.name);
+                    bool isZeroArg = false;
+                    if (defIt != m_functionDefs.end() && !defIt->second.empty()) {
+                        isZeroArg = defIt->second[0]->clauses[0].params.empty();
+                    }
+                    if (isZeroArg) {
+                        auto savedEnv = m_env;
+                        try {
+                            auto result = func->native({});
+                            if (result && !std::holds_alternative<NoneValue>(result->data)) {
+                                return result;
+                            }
+                        } catch (...) {
+                            m_env = savedEnv;
+                        }
+                    }
+                }
+            }
+            return val;
+        }
+        else if constexpr (std::is_same_v<T, ast::LetExpr>) {
+            auto value = node.value ? eval(*node.value) : Value::none();
+            if (auto* varPat = std::get_if<ast::VarPattern>(&node.pattern->kind)) {
+                m_env->define(varPat->name, value);
+            } else if (auto* tuplePat = std::get_if<ast::TuplePattern>(&node.pattern->kind)) {
+                if (auto* tupleVal = std::get_if<TupleValue>(&value->data)) {
+                    for (size_t i = 0; i < tuplePat->elements.size() && i < tupleVal->elements.size(); i++) {
+                        if (auto* vp = std::get_if<ast::VarPattern>(&tuplePat->elements[i]->kind)) {
+                            m_env->define(vp->name, tupleVal->elements[i]);
+                        }
+                    }
+                }
+            } else if (auto* recPat = std::get_if<ast::RecordPattern>(&node.pattern->kind)) {
+                if (auto* recVal = std::get_if<RecordValue>(&value->data)) {
+                    for (const auto& field : recPat->fields) {
+                        if (auto it = recVal->fields.find(field.name); it != recVal->fields.end()) {
+                            m_env->define(field.name, it->second);
+                        }
+                    }
+                } else if (auto* mapVal = std::get_if<MapValue>(&value->data)) {
+                    for (const auto& field : recPat->fields) {
+                        for (const auto& [k, v] : mapVal->entries) {
+                            if (auto* sk = std::get_if<StringValue>(&k->data)) {
+                                if (sk->value == field.name) {
+                                    m_env->define(field.name, v);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            return value;
+        }
+        else if constexpr (std::is_same_v<T, ast::VarExpr>) {
+            auto value = node.value ? eval(*node.value) : Value::none();
+            m_env->define(node.name, value);
+            return value;
+        }
+        else if constexpr (std::is_same_v<T, ast::AssignExpr>) {
+            auto value = node.value ? eval(*node.value) : Value::none();
+            if (!m_env->set(node.name, value)) {
+                throw RuntimeError("Undefined variable: " + node.name, expr.location);
+            }
+            return Value::none();
+        }
+        else if constexpr (std::is_same_v<T, ast::BinaryOp>) {
+            auto left = node.left ? eval(*node.left) : Value::none();
+            auto right = node.right ? eval(*node.right) : Value::none();
+            return evalBinaryOp(node.op, left, right, expr.location);
+        }
+        else if constexpr (std::is_same_v<T, ast::UnaryOp>) {
+            auto operand = node.operand ? eval(*node.operand) : Value::none();
+            return evalUnaryOp(node.op, operand, expr.location);
+        }
+        else if constexpr (std::is_same_v<T, ast::FunctionCall>) {
+            std::vector<ValuePtr> args;
+            for (const auto& arg : node.args) {
+                args.push_back(arg ? eval(*arg) : Value::none());
+            }
+            NamedArgs namedArgs;
+            for (const auto& [name, val] : node.namedArgs) {
+                namedArgs.push_back({name, val ? eval(*val) : Value::none()});
+            }
+            // Handle block as last arg (lambda)
+            if (node.block) {
+                args.push_back(eval(**node.block));
+            }
+            return callFunction(node.name, std::move(args), std::move(namedArgs), expr.location);
+        }
+        else if constexpr (std::is_same_v<T, ast::MethodCall>) {
+            auto receiver = node.receiver ? eval(*node.receiver) : Value::none();
+
+            // Namespace access: only for empty records (namespace placeholders like Stream, Math)
+            if (auto* rec = std::get_if<RecordValue>(&receiver->data)) {
+                if (rec->fields.empty()) {
+                    // Namespace call: Stream.Sequence(...), Math.PI, etc.
+                    std::vector<ValuePtr> args;
+                    for (const auto& arg : node.args) {
+                        args.push_back(arg ? eval(*arg) : Value::none());
+                    }
+                    NamedArgs namedArgs;
+                    for (const auto& [name, val] : node.namedArgs) {
+                        namedArgs.push_back({name, val ? eval(*val) : Value::none()});
+                    }
+                    if (node.block) {
+                        args.push_back(eval(**node.block));
+                    }
+                    return callFunction(node.method, std::move(args), std::move(namedArgs), expr.location);
+                }
+            }
+
+            // Field access on records: receiver.field (no args, no parens)
+            if (node.args.empty() && !node.block && !node.mutating) {
+                if (auto* rec = std::get_if<RecordValue>(&receiver->data)) {
+                    auto it = rec->fields.find(node.method);
+                    if (it != rec->fields.end()) {
+                        return it->second;
+                    }
+                }
+            }
+
+            std::vector<ValuePtr> args;
+            args.push_back(receiver); // UFCS: receiver is first arg
+            for (const auto& arg : node.args) {
+                args.push_back(arg ? eval(*arg) : Value::none());
+            }
+            if (node.block) {
+                args.push_back(eval(**node.block));
+            }
+
+            NamedArgs namedArgs;
+            for (const auto& [name, val] : node.namedArgs) {
+                namedArgs.push_back({name, val ? eval(*val) : Value::none()});
+            }
+
+            // Type-based dispatch: try TypeName::method first
+            std::string mangledName = node.method;
+            std::string receiverType;
+            if (auto* rec = std::get_if<RecordValue>(&receiver->data)) {
+                receiverType = rec->typeName;
+            } else if (std::holds_alternative<ListValue>(receiver->data)) {
+                receiverType = "List";
+            } else if (std::holds_alternative<MapValue>(receiver->data)) {
+                receiverType = "Map";
+            } else if (std::holds_alternative<IntValue>(receiver->data)) {
+                receiverType = "Integer";
+            } else if (std::holds_alternative<FloatValue>(receiver->data)) {
+                receiverType = "Float";
+            } else if (std::holds_alternative<StringValue>(receiver->data)) {
+                receiverType = "String";
+            }
+            if (!receiverType.empty()) {
+                auto typed = receiverType + "::" + node.method;
+                if (m_env->get(typed)) {
+                    mangledName = typed;
+                }
+            }
+
+            // For mutating calls, reassign back
+            if (node.mutating) {
+                auto result = callFunction(mangledName, args, namedArgs, expr.location);
+                if (auto* ident = std::get_if<ast::Identifier>(&node.receiver->kind)) {
+                    m_env->set(ident->name, result);
+                }
+                return result;
+            }
+
+            return callFunction(mangledName, std::move(args), std::move(namedArgs), expr.location);
+        }
+        else if constexpr (std::is_same_v<T, ast::ListExpr>) {
+            std::vector<ValuePtr> elements;
+            for (const auto& elem : node.elements) {
+                elements.push_back(elem ? eval(*elem) : Value::none());
+            }
+            return Value::list(std::move(elements));
+        }
+        else if constexpr (std::is_same_v<T, ast::TupleExpr>) {
+            std::vector<ValuePtr> elements;
+            for (const auto& elem : node.elements) {
+                elements.push_back(elem ? eval(*elem) : Value::none());
+            }
+            return Value::tuple(std::move(elements));
+        }
+        else if constexpr (std::is_same_v<T, ast::MapExpr>) {
+            auto map = std::make_shared<Value>();
+            std::vector<std::pair<ValuePtr, ValuePtr>> entries;
+            for (const auto& entry : node.entries) {
+                auto key = entry.key ? eval(*entry.key) : Value::none();
+                auto val = entry.value ? eval(*entry.value) : Value::none();
+                entries.push_back({key, val});
+            }
+            map->data = MapValue{std::move(entries)};
+            return map;
+        }
+        else if constexpr (std::is_same_v<T, ast::RangeExpr>) {
+            auto start = node.start ? eval(*node.start) : Value::integer(0);
+            auto end = node.end ? eval(*node.end) : Value::integer(0);
+            auto* s = std::get_if<IntValue>(&start->data);
+            auto* e = std::get_if<IntValue>(&end->data);
+            if (s && e) {
+                auto range = std::make_shared<Value>();
+                range->data = RangeValue{s->value, e->value};
+                return range;
+            }
+            auto range = std::make_shared<Value>();
+            range->data = RangeValue{0, 0};
+            return range;
+        }
+        else if constexpr (std::is_same_v<T, ast::IfExpr>) {
+            auto cond = node.condition ? eval(*node.condition) : Value::boolean(false);
+            if (cond->isTrue()) {
+                return evalBody(node.thenBody);
+            }
+            for (const auto& [elifCond, elifBody] : node.elifs) {
+                auto ec = elifCond ? eval(*elifCond) : Value::boolean(false);
+                if (ec->isTrue()) {
+                    return evalBody(elifBody);
+                }
+            }
+            if (node.elseBody) {
+                return evalBody(*node.elseBody);
+            }
+            return Value::none();
+        }
+        else if constexpr (std::is_same_v<T, ast::MatchExpr>) {
+            auto subject = node.subject ? eval(*node.subject) : Value::none();
+            for (const auto& clause : node.clauses) {
+                pushEnv();
+                bool matched = false;
+                for (const auto& pat : clause.patterns) {
+                    if (matchPattern(*pat, subject)) {
+                        matched = true;
+                        break;
+                    }
+                }
+                if (matched) {
+                    if (clause.guard && *clause.guard) {
+                        auto guardVal = eval(**clause.guard);
+                        if (!guardVal->isTrue()) {
+                            popEnv();
+                            continue;
+                        }
+                    }
+                    auto result = clause.body ? eval(*clause.body) : Value::none();
+                    popEnv();
+                    return result;
+                }
+                popEnv();
+            }
+            return Value::none();
+        }
+        else if constexpr (std::is_same_v<T, ast::ReturnExpr>) {
+            auto value = node.value ? eval(*node.value) : Value::none();
+            throw ReturnException(value);
+        }
+        else if constexpr (std::is_same_v<T, ast::Lambda>) {
+            auto lambda = std::make_shared<Value>();
+            auto capturedEnv = m_env;
+            const auto* bodyPtr = &node.body;
+            std::vector<std::string> paramNames;
+            for (const auto& p : node.params) {
+                paramNames.push_back(p.name);
+            }
+
+            lambda->data = FunctionValue{"<lambda>",
+                [this, bodyPtr, paramNames, capturedEnv](std::vector<ValuePtr> args) -> ValuePtr {
+                    auto prevEnv = m_env;
+                    m_env = std::make_shared<Environment>(capturedEnv);
+                    for (size_t i = 0; i < paramNames.size() && i < args.size(); i++) {
+                        m_env->define(paramNames[i], args[i]);
+                    }
+                    ValuePtr result;
+                    try {
+                        result = evalBody(*bodyPtr);
+                    } catch (ReturnException& ret) {
+                        result = ret.value();
+                    }
+                    m_env = prevEnv;
+                    return result;
+                }};
+            return lambda;
+        }
+        else if constexpr (std::is_same_v<T, ast::TrailingIf>) {
+            auto cond = node.condition ? eval(*node.condition) : Value::boolean(false);
+            if (cond->isTrue()) {
+                return node.expr ? eval(*node.expr) : Value::none();
+            }
+            return Value::none();
+        }
+        else if constexpr (std::is_same_v<T, ast::RecordConstruction>) {
+            std::unordered_map<std::string, ValuePtr> fields;
+            for (const auto& [name, val] : node.fields) {
+                fields[name] = val ? eval(*val) : Value::none();
+            }
+            return Value::record(node.typeName, std::move(fields));
+        }
+        else if constexpr (std::is_same_v<T, ast::ShorthandLambda>) {
+            if (node.kind == ast::ShorthandLambda::Kind::Function) {
+                // &function — look up the function and return it
+                auto val = m_env->get(node.name);
+                if (val) return val;
+                throw RuntimeError("Undefined function: " + node.name, expr.location);
+            }
+            if (node.kind == ast::ShorthandLambda::Kind::Method) {
+                // &.method — create a lambda that calls method on its arg
+                auto method = node.name;
+                auto lambda = std::make_shared<Value>();
+                lambda->data = FunctionValue{"&." + method,
+                    [this, method](std::vector<ValuePtr> args) -> ValuePtr {
+                        if (args.empty()) return Value::none();
+                        // Call method on the arg via UFCS
+                        return callFunction(method, std::move(args), {}, {});
+                    }};
+                return lambda;
+            }
+            if (node.kind == ast::ShorthandLambda::Kind::MethodWithArgs) {
+                // &.method(args) — create a lambda that calls method with extra args
+                auto method = node.name;
+                std::vector<ValuePtr> extraArgs;
+                for (const auto& arg : node.args) {
+                    extraArgs.push_back(arg ? eval(*arg) : Value::none());
+                }
+                auto lambda = std::make_shared<Value>();
+                lambda->data = FunctionValue{"&." + method,
+                    [this, method, extraArgs](std::vector<ValuePtr> args) -> ValuePtr {
+                        auto allArgs = args;
+                        for (const auto& a : extraArgs) allArgs.push_back(a);
+                        return callFunction(method, std::move(allArgs), {}, {});
+                    }};
+                return lambda;
+            }
+            return Value::none();
+        }
+        else if constexpr (std::is_same_v<T, ast::BlockExpr>) {
+            return evalBody(node.body);
+        }
+        else if constexpr (std::is_same_v<T, ast::UpperIdentifier>) {
+            // Look up in environment first (records, namespaces)
+            auto val = m_env->get(node.name);
+            if (val) return val;
+            // Otherwise return as type tag (atom) for pattern matching
+            return Value::atom(node.name);
+        }
+        else {
+            return Value::none();
+        }
+    }, expr.kind);
+}
+
+auto Evaluator::evalBinaryOp(TokenType op, const ValuePtr& left, const ValuePtr& right,
+                             SourceLocation loc) -> ValuePtr {
+    auto* li = std::get_if<IntValue>(&left->data);
+    auto* ri = std::get_if<IntValue>(&right->data);
+    auto* lf = std::get_if<FloatValue>(&left->data);
+    auto* rf = std::get_if<FloatValue>(&right->data);
+    auto* ls = std::get_if<StringValue>(&left->data);
+    auto* rs = std::get_if<StringValue>(&right->data);
+    auto* lb = std::get_if<BoolValue>(&left->data);
+    auto* rb = std::get_if<BoolValue>(&right->data);
+
+    switch (op) {
+        case TokenType::Plus:
+            if (li && ri) return Value::integer(li->value + ri->value);
+            if (lf && rf) return Value::floating(lf->value + rf->value);
+            if (li && rf) return Value::floating(li->value + rf->value);
+            if (lf && ri) return Value::floating(lf->value + ri->value);
+            if (ls && rs) return Value::string(ls->value + rs->value);
+            throw RuntimeError("Cannot add " + left->typeName() + " and " + right->typeName(), loc);
+
+        case TokenType::Minus:
+            if (li && ri) return Value::integer(li->value - ri->value);
+            if (lf && rf) return Value::floating(lf->value - rf->value);
+            if (li && rf) return Value::floating(li->value - rf->value);
+            if (lf && ri) return Value::floating(lf->value - ri->value);
+            throw RuntimeError("Cannot subtract " + left->typeName() + " and " + right->typeName(), loc);
+
+        case TokenType::Star:
+            if (li && ri) return Value::integer(li->value * ri->value);
+            if (lf && rf) return Value::floating(lf->value * rf->value);
+            if (li && rf) return Value::floating(li->value * rf->value);
+            if (lf && ri) return Value::floating(lf->value * ri->value);
+            throw RuntimeError("Cannot multiply " + left->typeName() + " and " + right->typeName(), loc);
+
+        case TokenType::Slash:
+            if (ri && ri->value == 0) throw RuntimeError("Division by zero", loc);
+            if (rf && rf->value == 0.0) throw RuntimeError("Division by zero", loc);
+            if (li && ri) return Value::integer(li->value / ri->value);
+            if (lf && rf) return Value::floating(lf->value / rf->value);
+            if (li && rf) return Value::floating(li->value / rf->value);
+            if (lf && ri) return Value::floating(lf->value / ri->value);
+            throw RuntimeError("Cannot divide " + left->typeName() + " and " + right->typeName(), loc);
+
+        case TokenType::Percent:
+            if (li && ri) {
+                if (ri->value == 0) throw RuntimeError("Modulo by zero", loc);
+                return Value::integer(li->value % ri->value);
+            }
+            throw RuntimeError("Modulo requires integers", loc);
+
+        case TokenType::EqEq: return Value::boolean(valuesEqual(left, right));
+        case TokenType::NotEq: return Value::boolean(!valuesEqual(left, right));
+
+        case TokenType::LessThan:
+            if (li && ri) return Value::boolean(li->value < ri->value);
+            if (lf && rf) return Value::boolean(lf->value < rf->value);
+            if (ls && rs) return Value::boolean(ls->value < rs->value);
+            throw RuntimeError("Cannot compare " + left->typeName() + " and " + right->typeName(), loc);
+
+        case TokenType::GreaterThan:
+            if (li && ri) return Value::boolean(li->value > ri->value);
+            if (lf && rf) return Value::boolean(lf->value > rf->value);
+            if (ls && rs) return Value::boolean(ls->value > rs->value);
+            throw RuntimeError("Cannot compare " + left->typeName() + " and " + right->typeName(), loc);
+
+        case TokenType::LessEq:
+            if (li && ri) return Value::boolean(li->value <= ri->value);
+            if (lf && rf) return Value::boolean(lf->value <= rf->value);
+            throw RuntimeError("Cannot compare " + left->typeName() + " and " + right->typeName(), loc);
+
+        case TokenType::GreaterEq:
+            if (li && ri) return Value::boolean(li->value >= ri->value);
+            if (lf && rf) return Value::boolean(lf->value >= rf->value);
+            throw RuntimeError("Cannot compare " + left->typeName() + " and " + right->typeName(), loc);
+
+        case TokenType::AmpAmp:
+            return Value::boolean(left->isTrue() && right->isTrue());
+
+        case TokenType::PipePipe:
+            return Value::boolean(left->isTrue() || right->isTrue());
+
+        default:
+            throw RuntimeError("Unknown operator", loc);
+    }
+}
+
+auto Evaluator::evalUnaryOp(TokenType op, const ValuePtr& operand,
+                            SourceLocation loc) -> ValuePtr {
+    switch (op) {
+        case TokenType::Minus:
+            if (auto* i = std::get_if<IntValue>(&operand->data))
+                return Value::integer(-i->value);
+            if (auto* f = std::get_if<FloatValue>(&operand->data))
+                return Value::floating(-f->value);
+            throw RuntimeError("Cannot negate " + operand->typeName(), loc);
+
+        case TokenType::Bang:
+            return Value::boolean(!operand->isTrue());
+
+        default:
+            throw RuntimeError("Unknown unary operator", loc);
+    }
+}
+
+auto Evaluator::callFunction(const std::string& name, std::vector<ValuePtr> args,
+                             NamedArgs namedArgs, SourceLocation loc) -> ValuePtr {
+    auto val = m_env->get(name);
+    if (!val) {
+        throw RuntimeError("Undefined function: " + name, loc);
+    }
+
+    if (auto* func = std::get_if<FunctionValue>(&val->data)) {
+        if (func->native) {
+            // Reorder: place named args into correct positions based on param names
+            if (!namedArgs.empty()) {
+                auto it = m_functionDefs.find(name);
+                if (it != m_functionDefs.end() && !it->second.empty()) {
+                    const auto& firstClause = it->second[0]->clauses[0];
+                    // Build full arg list: start with positional, fill in named
+                    size_t totalParams = firstClause.params.size();
+                    std::vector<ValuePtr> fullArgs(totalParams, nullptr);
+
+                    // Place positional args first
+                    for (size_t i = 0; i < args.size() && i < totalParams; i++) {
+                        fullArgs[i] = std::move(args[i]);
+                    }
+
+                    // Place named args by matching param names
+                    for (auto& [argName, argVal] : namedArgs) {
+                        for (size_t i = 0; i < firstClause.params.size(); i++) {
+                            if (firstClause.params[i].name.has_value() &&
+                                *firstClause.params[i].name == argName) {
+                                fullArgs[i] = std::move(argVal);
+                                break;
+                            }
+                        }
+                    }
+
+                    // Fill any remaining nulls with None
+                    for (auto& a : fullArgs) {
+                        if (!a) a = Value::none();
+                    }
+
+                    return func->native(std::move(fullArgs));
+                } else {
+                    // No def info — just append named args
+                    for (auto& [_, v] : namedArgs) {
+                        args.push_back(std::move(v));
+                    }
+                }
+            }
+            return func->native(std::move(args));
+        }
+    }
+
+    throw RuntimeError("'" + name + "' is not callable", loc);
+}
+
+auto Evaluator::matchPattern(const ast::Pattern& pattern, const ValuePtr& value) -> bool {
+    return std::visit([this, &value](const auto& pat) -> bool {
+        using T = std::decay_t<decltype(pat)>;
+
+        if constexpr (std::is_same_v<T, ast::WildcardPattern>) {
+            return true;
+        }
+        else if constexpr (std::is_same_v<T, ast::ThisPattern>) {
+            // @pattern — match the inner pattern against 'this' (the value)
+            if (pat.inner) {
+                return matchPattern(*pat.inner, value);
+            }
+            return true;
+        }
+        else if constexpr (std::is_same_v<T, ast::VarPattern>) {
+            m_env->define(pat.name, value);
+            return true;
+        }
+        else if constexpr (std::is_same_v<T, ast::LiteralPattern>) {
+            if (pat.literal.type == TokenType::Integer) {
+                auto* iv = std::get_if<IntValue>(&value->data);
+                return iv && iv->value == std::stoll(pat.literal.value);
+            }
+            if (pat.literal.type == TokenType::String) {
+                auto* sv = std::get_if<StringValue>(&value->data);
+                return sv && sv->value == pat.literal.value;
+            }
+            if (pat.literal.type == TokenType::True) {
+                auto* bv = std::get_if<BoolValue>(&value->data);
+                return bv && bv->value;
+            }
+            if (pat.literal.type == TokenType::False) {
+                auto* bv = std::get_if<BoolValue>(&value->data);
+                return bv && !bv->value;
+            }
+            if (pat.literal.type == TokenType::None) {
+                return std::holds_alternative<NoneValue>(value->data);
+            }
+            if (pat.literal.type == TokenType::Atom) {
+                auto* av = std::get_if<AtomValue>(&value->data);
+                return av && av->name == pat.literal.value;
+            }
+            return false;
+        }
+        else if constexpr (std::is_same_v<T, ast::TuplePattern>) {
+            auto* tv = std::get_if<TupleValue>(&value->data);
+            if (!tv || tv->elements.size() != pat.elements.size()) return false;
+            for (size_t i = 0; i < pat.elements.size(); i++) {
+                if (!matchPattern(*pat.elements[i], tv->elements[i])) return false;
+            }
+            return true;
+        }
+        else if constexpr (std::is_same_v<T, ast::ListPattern>) {
+            auto* lv = std::get_if<ListValue>(&value->data);
+            if (!lv) return false;
+            if (pat.elements.empty() && !pat.rest) {
+                return lv->elements.empty();
+            }
+            if (lv->elements.size() < pat.elements.size()) return false;
+            for (size_t i = 0; i < pat.elements.size(); i++) {
+                if (!matchPattern(*pat.elements[i], lv->elements[i])) return false;
+            }
+            if (pat.rest) {
+                std::vector<ValuePtr> rest(lv->elements.begin() + pat.elements.size(), lv->elements.end());
+                if (!matchPattern(**pat.rest, Value::list(std::move(rest)))) return false;
+            }
+            return true;
+        }
+        else if constexpr (std::is_same_v<T, ast::ConstructorPattern>) {
+            // Match None
+            if (pat.name == "None") return std::holds_alternative<NoneValue>(value->data);
+
+            if (pat.args.empty()) {
+                // Match type tag atoms: to(String) passes atom("String")
+                if (auto* atom = std::get_if<AtomValue>(&value->data)) {
+                    if (atom->name == pat.name) return true;
+                }
+
+                // Match type names as type patterns (for runtime type checking)
+                if (pat.name == "String") return std::holds_alternative<StringValue>(value->data);
+                if (pat.name == "Int" || pat.name == "Integer") return std::holds_alternative<IntValue>(value->data);
+                if (pat.name == "Float") return std::holds_alternative<FloatValue>(value->data);
+                if (pat.name == "Bool") return std::holds_alternative<BoolValue>(value->data);
+                if (pat.name == "Atom") return std::holds_alternative<AtomValue>(value->data);
+                if (pat.name == "List") return std::holds_alternative<ListValue>(value->data);
+                if (pat.name == "Map") return std::holds_alternative<MapValue>(value->data);
+                if (pat.name == "Tuple") return std::holds_alternative<TupleValue>(value->data);
+                if (pat.name == "Range") return std::holds_alternative<RangeValue>(value->data);
+                if (pat.name == "Stream") return std::holds_alternative<StreamValue>(value->data);
+                // Match record type name
+                if (auto* rec = std::get_if<RecordValue>(&value->data)) {
+                    if (rec->typeName == pat.name) return true;
+                }
+                // Match True/False as literal patterns
+                if (pat.name == "True") {
+                    auto* b = std::get_if<BoolValue>(&value->data);
+                    return b && b->value;
+                }
+                if (pat.name == "False") {
+                    auto* b = std::get_if<BoolValue>(&value->data);
+                    return b && !b->value;
+                }
+            }
+
+            // Constructor with args: Just(x)
+            // TODO: implement algebraic data type matching
+            return false;
+        }
+        else if constexpr (std::is_same_v<T, ast::RecordPattern>) {
+            if (auto* rv = std::get_if<RecordValue>(&value->data)) {
+                for (const auto& field : pat.fields) {
+                    auto it = rv->fields.find(field.name);
+                    if (it == rv->fields.end()) return false;
+                    if (field.pattern && !matchPattern(**field.pattern, it->second)) return false;
+                    if (!field.pattern) m_env->define(field.name, it->second);
+                }
+                return true;
+            }
+            return false;
+        }
+        else {
+            return false;
+        }
+    }, pattern.kind);
+}
+
+auto Evaluator::registerBuiltins() -> void {
+    auto reg = [this](const std::string& name, NativeFunc fn) {
+        auto val = std::make_shared<Value>();
+        val->data = FunctionValue{name, std::move(fn)};
+        m_globalEnv->define(name, val);
+    };
+
+    // --- IO ---
+
+    reg("print", [this](std::vector<ValuePtr> args) -> ValuePtr {
+        for (const auto& arg : args) {
+            auto str = arg->toString();
+            m_output += str;
+            std::cout << str;
+        }
+        m_output += "\n";
+        std::cout << "\n";
+        return Value::none();
+    });
+
+    // --- List operations (UFCS: first arg is the list) ---
+
+    // Helper: expand a Range to a list for operations
+    auto rangeToList = [](const RangeValue& r) -> std::vector<ValuePtr> {
+        std::vector<ValuePtr> elems;
+        for (int64_t i = r.start; i <= r.end; i++) {
+            elems.push_back(Value::integer(i));
+        }
+        return elems;
+    };
+
+    // Helper: get elements from a list or range
+    auto getElements = [&rangeToList](const ValuePtr& val) -> std::vector<ValuePtr> {
+        if (auto* list = std::get_if<ListValue>(&val->data)) return list->elements;
+        if (auto* range = std::get_if<RangeValue>(&val->data)) return rangeToList(*range);
+        return {};
+    };
+
+    // to(Type) — universal conversion
+    reg("to", [&rangeToList](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.size() < 2) return Value::none();
+        // args[0] = this (value to convert), args[1] = target type identifier
+        // For now, check by UpperIdent name passed as a constructor/identifier
+        auto* targetId = std::get_if<StringValue>(&args[1]->data);
+        // If target is a bare UpperIdent, it gets evaluated as an identifier
+        // For now handle common conversions directly
+
+        // Range/Stream/List -> List
+        if (auto* range = std::get_if<RangeValue>(&args[0]->data)) {
+            return Value::list(rangeToList(*range));
+        }
+        if (std::holds_alternative<ListValue>(args[0]->data)) return args[0];
+
+        // Anything -> String
+        return Value::string(args[0]->toString());
+    });
+
+    reg("length", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.empty()) return Value::integer(0);
+        if (auto* list = std::get_if<ListValue>(&args[0]->data))
+            return Value::integer(static_cast<int64_t>(list->elements.size()));
+        if (auto* str = std::get_if<StringValue>(&args[0]->data))
+            return Value::integer(static_cast<int64_t>(str->value.size()));
+        if (auto* range = std::get_if<RangeValue>(&args[0]->data))
+            return Value::integer(range->end - range->start + 1);
+        return Value::integer(0);
+    });
+
+    reg("empty?", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.empty()) return Value::boolean(true);
+        if (auto* list = std::get_if<ListValue>(&args[0]->data))
+            return Value::boolean(list->elements.empty());
+        if (auto* str = std::get_if<StringValue>(&args[0]->data))
+            return Value::boolean(str->value.empty());
+        return Value::boolean(true);
+    });
+
+    reg("push", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.size() < 2) return args.empty() ? Value::list({}) : args[0];
+        if (auto* list = std::get_if<ListValue>(&args[0]->data)) {
+            auto newList = list->elements;
+            newList.push_back(args[1]);
+            return Value::list(std::move(newList));
+        }
+        return args[0];
+    });
+
+    reg("map", [this, &getElements](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.size() < 2) return Value::list({});
+
+        // Lazy map on streams
+        if (auto* stream = std::get_if<StreamValue>(&args[0]->data)) {
+            auto* fn = std::get_if<FunctionValue>(&args[1]->data);
+            if (!fn || !fn->native) return Value::list({});
+            auto gen = stream->generator;
+            auto offset = stream->offset;
+            auto mapFn = fn->native;
+            auto newStream = std::make_shared<Value>();
+            newStream->data = StreamValue{[gen, offset, mapFn](int64_t index) -> ValuePtr {
+                return mapFn({gen(offset + index)});
+            }, 0};
+            return newStream;
+        }
+
+        auto elems = getElements(args[0]);
+        auto* fn = std::get_if<FunctionValue>(&args[1]->data);
+        if (!fn || !fn->native) return Value::list({});
+
+        std::vector<ValuePtr> result;
+        for (const auto& elem : elems) {
+            result.push_back(fn->native({elem}));
+        }
+        return Value::list(std::move(result));
+    });
+
+    reg("filter", [this, &getElements](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.size() < 2) return Value::list({});
+
+        // Lazy filter on streams — returns a new stream that skips non-matching
+        if (auto* stream = std::get_if<StreamValue>(&args[0]->data)) {
+            auto* fn = std::get_if<FunctionValue>(&args[1]->data);
+            if (!fn || !fn->native) return Value::list({});
+            auto gen = stream->generator;
+            auto offset = stream->offset;
+            auto filterFn = fn->native;
+            auto newStream = std::make_shared<Value>();
+            newStream->data = StreamValue{[gen, offset, filterFn](int64_t index) -> ValuePtr {
+                // Walk forward through the source stream to find the nth matching element
+                int64_t found = 0;
+                int64_t i = 0;
+                int64_t maxSearch = index * 100 + 1000; // safety limit
+                while (found <= index && i < maxSearch) {
+                    auto val = gen(offset + i);
+                    if (filterFn({val})->isTrue()) {
+                        if (found == index) return val;
+                        found++;
+                    }
+                    i++;
+                }
+                return Value::none();
+            }, 0};
+            return newStream;
+        }
+
+        auto elems = getElements(args[0]);
+        auto* fn = std::get_if<FunctionValue>(&args[1]->data);
+        if (!fn || !fn->native) return Value::list({});
+
+        std::vector<ValuePtr> result;
+        for (const auto& elem : elems) {
+            auto val = fn->native({elem});
+            if (val->isTrue()) result.push_back(elem);
+        }
+        return Value::list(std::move(result));
+    });
+
+    reg("reject", [this, &getElements](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.size() < 2) return Value::list({});
+        auto elems = getElements(args[0]);
+        auto* fn = std::get_if<FunctionValue>(&args[1]->data);
+        if (!fn || !fn->native) return Value::list({});
+
+        std::vector<ValuePtr> result;
+        for (const auto& elem : elems) {
+            auto val = fn->native({elem});
+            if (!val->isTrue()) result.push_back(elem);
+        }
+        return Value::list(std::move(result));
+    });
+
+    reg("reduce", [this, &getElements](std::vector<ValuePtr> args) -> ValuePtr {
+        // reduce(list, initial, fn)
+        if (args.size() < 3) return Value::none();
+        auto elems = getElements(args[0]);
+        auto* fn = std::get_if<FunctionValue>(&args[2]->data);
+        if (!fn || !fn->native) return args[1];
+
+        auto acc = args[1];
+        for (const auto& elem : elems) {
+            acc = fn->native({acc, elem});
+        }
+        return acc;
+    });
+
+    reg("each", [this, &getElements](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.size() < 2) return Value::none();
+        auto elems = getElements(args[0]);
+        auto* fn = std::get_if<FunctionValue>(&args[1]->data);
+        if (!fn || !fn->native) return Value::none();
+
+        for (const auto& elem : elems) {
+            fn->native({elem});
+        }
+        return Value::none();
+    });
+
+    reg("find", [this, &getElements](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.size() < 2) return Value::none();
+        auto elems = getElements(args[0]);
+        auto* fn = std::get_if<FunctionValue>(&args[1]->data);
+        if (!fn || !fn->native) return Value::none();
+
+        for (const auto& elem : elems) {
+            auto val = fn->native({elem});
+            if (val->isTrue()) return elem;
+        }
+        return Value::none();
+    });
+
+    reg("join", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.empty()) return Value::string("");
+        auto* list = std::get_if<ListValue>(&args[0]->data);
+        if (!list) return Value::string("");
+
+        std::string sep = "";
+        if (args.size() >= 2) {
+            if (auto* s = std::get_if<StringValue>(&args[1]->data)) sep = s->value;
+        }
+
+        std::string result;
+        for (size_t i = 0; i < list->elements.size(); i++) {
+            if (i > 0) result += sep;
+            result += list->elements[i]->toString();
+        }
+        return Value::string(result);
+    });
+
+    reg("first", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.empty()) return Value::none();
+        if (auto* list = std::get_if<ListValue>(&args[0]->data)) {
+            if (list->elements.empty()) return Value::none();
+            return list->elements[0];
+        }
+        return Value::none();
+    });
+
+    reg("last", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.empty()) return Value::none();
+        if (auto* list = std::get_if<ListValue>(&args[0]->data)) {
+            if (list->elements.empty()) return Value::none();
+            return list->elements.back();
+        }
+        return Value::none();
+    });
+
+    reg("size", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.empty()) return Value::integer(0);
+        if (auto* list = std::get_if<ListValue>(&args[0]->data))
+            return Value::integer(static_cast<int64_t>(list->elements.size()));
+        if (auto* map = std::get_if<MapValue>(&args[0]->data))
+            return Value::integer(static_cast<int64_t>(map->entries.size()));
+        return Value::integer(0);
+    });
+
+    // --- Integer operations ---
+
+    reg("modulo", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.size() < 2) return Value::integer(0);
+        auto* a = std::get_if<IntValue>(&args[0]->data);
+        auto* b = std::get_if<IntValue>(&args[1]->data);
+        if (a && b && b->value != 0) return Value::integer(a->value % b->value);
+        return Value::integer(0);
+    });
+
+    reg("abs", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.empty()) return Value::integer(0);
+        if (auto* i = std::get_if<IntValue>(&args[0]->data))
+            return Value::integer(i->value < 0 ? -i->value : i->value);
+        if (auto* f = std::get_if<FloatValue>(&args[0]->data))
+            return Value::floating(f->value < 0 ? -f->value : f->value);
+        return args[0];
+    });
+
+    // --- String operations ---
+
+    reg("contains?", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.size() < 2) return Value::boolean(false);
+        auto* str = std::get_if<StringValue>(&args[0]->data);
+        auto* sub = std::get_if<StringValue>(&args[1]->data);
+        if (str && sub) return Value::boolean(str->value.find(sub->value) != std::string::npos);
+        return Value::boolean(false);
+    });
+
+    reg("split", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.empty()) return Value::list({});
+        auto* str = std::get_if<StringValue>(&args[0]->data);
+        if (!str) return Value::list({});
+
+        std::string sep = "";
+        if (args.size() >= 2) {
+            if (auto* s = std::get_if<StringValue>(&args[1]->data)) sep = s->value;
+        }
+
+        std::vector<ValuePtr> parts;
+        if (sep.empty()) {
+            for (char c : str->value) parts.push_back(Value::string(std::string(1, c)));
+        } else {
+            size_t start = 0, pos;
+            while ((pos = str->value.find(sep, start)) != std::string::npos) {
+                parts.push_back(Value::string(str->value.substr(start, pos - start)));
+                start = pos + sep.size();
+            }
+            parts.push_back(Value::string(str->value.substr(start)));
+        }
+        return Value::list(std::move(parts));
+    });
+
+    reg("trim", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.empty()) return Value::string("");
+        auto* str = std::get_if<StringValue>(&args[0]->data);
+        if (!str) return Value::string("");
+        auto s = str->value;
+        auto start = s.find_first_not_of(" \t\n\r");
+        auto end = s.find_last_not_of(" \t\n\r");
+        if (start == std::string::npos) return Value::string("");
+        return Value::string(s.substr(start, end - start + 1));
+    });
+
+    reg("upcase", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.empty()) return Value::string("");
+        auto* str = std::get_if<StringValue>(&args[0]->data);
+        if (!str) return Value::string("");
+        std::string result = str->value;
+        for (auto& c : result) c = static_cast<char>(std::toupper(c));
+        return Value::string(result);
+    });
+
+    reg("downcase", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.empty()) return Value::string("");
+        auto* str = std::get_if<StringValue>(&args[0]->data);
+        if (!str) return Value::string("");
+        std::string result = str->value;
+        for (auto& c : result) c = static_cast<char>(std::tolower(c));
+        return Value::string(result);
+    });
+
+    reg("reverse", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.empty()) return Value::none();
+        if (auto* str = std::get_if<StringValue>(&args[0]->data)) {
+            std::string result(str->value.rbegin(), str->value.rend());
+            return Value::string(result);
+        }
+        if (auto* list = std::get_if<ListValue>(&args[0]->data)) {
+            std::vector<ValuePtr> result(list->elements.rbegin(), list->elements.rend());
+            return Value::list(std::move(result));
+        }
+        return args[0];
+    });
+
+    reg("take", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.size() < 2) return Value::list({});
+        auto* list = std::get_if<ListValue>(&args[0]->data);
+        auto* n = std::get_if<IntValue>(&args[1]->data);
+        if (!list || !n) return Value::list({});
+        auto count = std::min(static_cast<size_t>(n->value), list->elements.size());
+        std::vector<ValuePtr> result(list->elements.begin(), list->elements.begin() + count);
+        return Value::list(std::move(result));
+    });
+
+    reg("drop", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.size() < 2) return Value::list({});
+        auto* list = std::get_if<ListValue>(&args[0]->data);
+        auto* n = std::get_if<IntValue>(&args[1]->data);
+        if (!list || !n) return Value::list({});
+        auto skip = std::min(static_cast<size_t>(n->value), list->elements.size());
+        std::vector<ValuePtr> result(list->elements.begin() + skip, list->elements.end());
+        return Value::list(std::move(result));
+    });
+
+    reg("zip", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.size() < 2) return Value::list({});
+        auto* a = std::get_if<ListValue>(&args[0]->data);
+        auto* b = std::get_if<ListValue>(&args[1]->data);
+        if (!a || !b) return Value::list({});
+        auto len = std::min(a->elements.size(), b->elements.size());
+        std::vector<ValuePtr> result;
+        for (size_t i = 0; i < len; i++) {
+            result.push_back(Value::tuple({a->elements[i], b->elements[i]}));
+        }
+        return Value::list(std::move(result));
+    });
+
+    reg("flatten", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.empty()) return Value::list({});
+        auto* list = std::get_if<ListValue>(&args[0]->data);
+        if (!list) return Value::list({});
+        std::vector<ValuePtr> result;
+        for (const auto& elem : list->elements) {
+            if (auto* inner = std::get_if<ListValue>(&elem->data)) {
+                for (const auto& e : inner->elements) result.push_back(e);
+            } else {
+                result.push_back(elem);
+            }
+        }
+        return Value::list(std::move(result));
+    });
+
+    reg("any?", [this, &getElements](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.size() < 2) return Value::boolean(false);
+        auto elems = getElements(args[0]);
+        auto* fn = std::get_if<FunctionValue>(&args[1]->data);
+        if (!fn || !fn->native) return Value::boolean(false);
+        for (const auto& elem : elems) {
+            if (fn->native({elem})->isTrue()) return Value::boolean(true);
+        }
+        return Value::boolean(false);
+    });
+
+    reg("all?", [this, &getElements](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.size() < 2) return Value::boolean(true);
+        auto elems = getElements(args[0]);
+        auto* fn = std::get_if<FunctionValue>(&args[1]->data);
+        if (!fn || !fn->native) return Value::boolean(true);
+        for (const auto& elem : elems) {
+            if (!fn->native({elem})->isTrue()) return Value::boolean(false);
+        }
+        return Value::boolean(true);
+    });
+
+    reg("count", [this, &getElements](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.empty()) return Value::integer(0);
+        auto elems = getElements(args[0]);
+        if (args.size() < 2) return Value::integer(static_cast<int64_t>(elems.size()));
+        auto* fn = std::get_if<FunctionValue>(&args[1]->data);
+        if (!fn || !fn->native) return Value::integer(0);
+        int64_t c = 0;
+        for (const auto& elem : elems) {
+            if (fn->native({elem})->isTrue()) c++;
+        }
+        return Value::integer(c);
+    });
+
+    reg("sort", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.empty()) return Value::list({});
+        auto* list = std::get_if<ListValue>(&args[0]->data);
+        if (!list) return Value::list({});
+        auto sorted = list->elements;
+        std::sort(sorted.begin(), sorted.end(), [](const ValuePtr& a, const ValuePtr& b) {
+            auto* ai = std::get_if<IntValue>(&a->data);
+            auto* bi = std::get_if<IntValue>(&b->data);
+            if (ai && bi) return ai->value < bi->value;
+            auto* af = std::get_if<FloatValue>(&a->data);
+            auto* bf = std::get_if<FloatValue>(&b->data);
+            if (af && bf) return af->value < bf->value;
+            auto* as = std::get_if<StringValue>(&a->data);
+            auto* bs = std::get_if<StringValue>(&b->data);
+            if (as && bs) return as->value < bs->value;
+            return false;
+        });
+        return Value::list(std::move(sorted));
+    });
+
+    reg("min", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.empty()) return Value::none();
+        if (auto* list = std::get_if<ListValue>(&args[0]->data)) {
+            if (list->elements.empty()) return Value::none();
+            auto result = list->elements[0];
+            for (size_t i = 1; i < list->elements.size(); i++) {
+                auto* ri = std::get_if<IntValue>(&result->data);
+                auto* ei = std::get_if<IntValue>(&list->elements[i]->data);
+                if (ri && ei && ei->value < ri->value) result = list->elements[i];
+            }
+            return result;
+        }
+        return args[0];
+    });
+
+    reg("max", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.empty()) return Value::none();
+        if (auto* list = std::get_if<ListValue>(&args[0]->data)) {
+            if (list->elements.empty()) return Value::none();
+            auto result = list->elements[0];
+            for (size_t i = 1; i < list->elements.size(); i++) {
+                auto* ri = std::get_if<IntValue>(&result->data);
+                auto* ei = std::get_if<IntValue>(&list->elements[i]->data);
+                if (ri && ei && ei->value > ri->value) result = list->elements[i];
+            }
+            return result;
+        }
+        return args[0];
+    });
+
+    reg("sum", [&getElements](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.empty()) return Value::integer(0);
+        auto elems = getElements(args[0]);
+        int64_t total = 0;
+        for (const auto& elem : elems) {
+            if (auto* i = std::get_if<IntValue>(&elem->data)) total += i->value;
+        }
+        return Value::integer(total);
+    });
+
+    // --- Stream operations ---
+
+    // Namespace placeholders — currently static functions are resolved globally.
+    // Stream.Sequence → just use Sequence directly for now.
+
+    // Stream.Sequence(from: start, step_fn) — creates infinite stream
+    reg("Sequence", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.size() < 2) return Value::none();
+        // Find start value and step function regardless of order
+        ValuePtr startVal;
+        const FunctionValue* stepFn = nullptr;
+        for (const auto& arg : args) {
+            if (std::get_if<FunctionValue>(&arg->data)) {
+                stepFn = std::get_if<FunctionValue>(&arg->data);
+            } else if (!startVal) {
+                startVal = arg;
+            }
+        }
+        if (!startVal || !stepFn) return Value::none();
+        if (!stepFn || !stepFn->native) return Value::none();
+
+        auto start = startVal;
+        auto step = stepFn->native;
+        auto stream = std::make_shared<Value>();
+        stream->data = StreamValue{[start, step](int64_t index) -> ValuePtr {
+            auto current = start;
+            for (int64_t i = 0; i < index; i++) {
+                current = step({current});
+            }
+            return current;
+        }, 0};
+        return stream;
+    });
+
+    // Stream.Iterate(seed, fn) — like Generate but explicit naming
+    reg("Iterate", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.size() < 2) return Value::none();
+        auto seed = args[0];
+        auto* fn = std::get_if<FunctionValue>(&args[1]->data);
+        if (!fn || !fn->native) return Value::none();
+
+        auto step = fn->native;
+        auto stream = std::make_shared<Value>();
+        stream->data = StreamValue{[seed, step](int64_t index) -> ValuePtr {
+            auto current = seed;
+            for (int64_t i = 0; i < index; i++) {
+                current = step({current});
+            }
+            return current;
+        }, 0};
+        return stream;
+    });
+
+    // Update take to handle streams
+    auto origTake = m_globalEnv->get("take");
+    reg("take", [origTake](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.size() < 2) return Value::list({});
+        // Stream.take(n)
+        if (auto* stream = std::get_if<StreamValue>(&args[0]->data)) {
+            auto* n = std::get_if<IntValue>(&args[1]->data);
+            if (!n) return Value::list({});
+            std::vector<ValuePtr> result;
+            for (int64_t i = 0; i < n->value; i++) {
+                result.push_back(stream->generator(stream->offset + i));
+            }
+            return Value::list(std::move(result));
+        }
+        // List.take(n) — delegate to original
+        if (auto* fn = std::get_if<FunctionValue>(&origTake->data)) {
+            return fn->native(std::move(args));
+        }
+        return Value::list({});
+    });
+
+    // Stream.drop(n) — returns a new stream with offset
+    reg("drop", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.size() < 2) return Value::list({});
+        if (auto* stream = std::get_if<StreamValue>(&args[0]->data)) {
+            auto* n = std::get_if<IntValue>(&args[1]->data);
+            if (!n) return args[0];
+            auto newStream = std::make_shared<Value>();
+            newStream->data = StreamValue{stream->generator, stream->offset + n->value};
+            return newStream;
+        }
+        // List.drop
+        auto* list = std::get_if<ListValue>(&args[0]->data);
+        auto* n = std::get_if<IntValue>(&args[1]->data);
+        if (!list || !n) return Value::list({});
+        auto skip = std::min(static_cast<size_t>(n->value), list->elements.size());
+        std::vector<ValuePtr> result(list->elements.begin() + skip, list->elements.end());
+        return Value::list(std::move(result));
+    });
+}
+
+auto Evaluator::pushEnv() -> void {
+    m_env = std::make_shared<Environment>(m_env);
+}
+
+auto Evaluator::popEnv() -> void {
+    if (m_env->parent()) {
+        m_env = m_env->parent();
+    }
+}
+
+} // namespace kex::interpreter

@@ -1,0 +1,59 @@
+# Closures and lambdas
+
+# Inline lambda with pipes
+let doubled = [1, 2, 3].map { |x| x * 2 }
+
+# Multi-line block
+let processed = [1, 2, 3, 4, 5].filter do |x|
+  let remainder = x.modulo(2)
+  remainder == 0
+end
+
+# Zero-arg lambda
+let thunk = { 42 }
+let value = thunk()
+
+# Shorthand lambdas
+let names = users.map(&.name)
+let adults = users.filter(&.adult?)
+let lengths = words.map(&.length)
+let with_greeting = names.map(&.+ " hello")
+
+# &function — passing named function as closure
+let parsed = strings.map(&parseInt)
+let sorted = items.sort(&compare)
+
+# Closures capture values, not references
+let makeGreeter(prefix: String) -> (String -> String) do
+  return { |name| "${prefix}, ${name}!" }
+end
+
+let hello = makeGreeter("Hello")
+let hi = makeGreeter("Hi")
+hello("Alice")   # "Hello, Alice!"
+hi("World")     # "Hi, World!"
+
+# Closures over var capture the value at creation time
+let demonstrate do
+  var x = 10
+  let snapshot = { x }
+  x = 20
+  snapshot()   # 10 — captured at creation
+end
+
+# Higher-order functions
+let compose(f: A -> B, g: B -> C) -> (A -> C) do
+  return { |x| g(f(x)) }
+end
+
+let doubleAndToString = compose(&.* 2, &.to(String))
+doubleAndToString(5)   # "10"
+
+# Functions accepting blocks
+let times(n: Int, block: Block<[()]>) do
+  (1..n).each { |_| block() }
+end
+
+times(3) do
+  print("hello")
+end

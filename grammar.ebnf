@@ -1,0 +1,443 @@
+(* Kex Language Grammar — EBNF *)
+(* Conventions: *)
+(*   lowercase = rule *)
+(*   UPPER     = token/terminal *)
+(*   ?         = optional *)
+(*   *         = zero or more *)
+(*   +         = one or more *)
+(*   |         = alternative *)
+
+(* ===== Top-Level ===== *)
+
+program = top_level_item* ;
+
+top_level_item
+  = module_def
+  | type_def
+  | record_def
+  | make_def
+  | function_def
+  | compiled_block
+  | using_block
+  | main_block
+  | pragma
+  ;
+
+(* ===== Modules ===== *)
+
+module_def = FOUL? MODULE UPPER_IDENT DO module_body END ;
+
+module_body = module_item* ;
+
+module_item
+  = module_def
+  | type_def
+  | record_def
+  | make_def
+  | function_def
+  | compiled_block
+  | visibility_block
+  | using_block
+  ;
+
+visibility_block = ( PUBLIC | PRIVATE ) DO module_item* END ;
+
+(* ===== Types ===== *)
+
+type_def
+  = TYPE UPPER_IDENT type_params? inheritance? EQUALS type_expr ( PIPE type_expr )*
+  | TYPE UPPER_IDENT type_params? inheritance? DO type_body END
+  | TYPE UPPER_IDENT type_params? inheritance?
+  ;
+
+type_body = ( abstract_function | static_block )* ;
+
+inheritance = LESS_THAN type_name ( COMMA type_name )* ;
+
+type_params = LESS_THAN UPPER_IDENT ( COMMA UPPER_IDENT )* GREATER_THAN ;
+
+type_expr
+  = type_name
+  | type_name LESS_THAN type_arg ( COMMA type_arg )* GREATER_THAN
+  | LOWER_IDENT                                   (* single-letter generic *)
+  | type_expr ARROW type_expr                     (* function type *)
+  | LPAREN type_expr ( COMMA type_expr )* RPAREN  (* tuple type *)
+  | LBRACKET type_expr RBRACKET                   (* list type *)
+  | LBRACE type_expr COLON type_expr RBRACE       (* map type *)
+  | type_expr PIPE type_expr                      (* union type *)
+  | type_expr QUESTION                            (* optional sugar *)
+  | BLOCK LESS_THAN type_expr GREATER_THAN        (* block type *)
+  | atom_literal                                  (* atom in type position *)
+  ;
+
+type_arg = type_expr ;
+
+type_name = UPPER_IDENT ( DOT UPPER_IDENT )* ;
+
+abstract_function = LOWER_IDENT ( TYPE_ANNOTATION | COLON ) type_expr ;
+
+(* ===== Records ===== *)
+
+record_def = RECORD UPPER_IDENT type_params? DO record_body END ;
+
+record_body = ( record_field | static_block )* ;
+
+record_field = LOWER_IDENT COLON type_expr ( EQUALS expr )? ;
+
+static_block = STATIC DO module_item* END ;
+
+(* ===== Make Blocks ===== *)
+
+make_def = MAKE make_target DO make_body END ;
+
+make_target
+  = FINAL COLON type_expr
+  | type_expr
+  ;
+
+make_body = make_item* ;
+
+make_item
+  = function_def
+  | type_annotation
+  | visibility_block
+  ;
+
+(* ===== Functions ===== *)
+
+function_def
+  = FOUL? LET LOWER_IDENT function_clauses
+  | FOUL? LET LOWER_IDENT QUESTION function_clauses  (* predicate functions *)
+  ;
+
+function_clauses
+  = function_clause
+  | function_clause ( function_clause )*
+  ;
+
+function_clause
+  = LPAREN params RPAREN EQUALS expr
+  | LPAREN params RPAREN DO body END
+  | LPAREN params RPAREN DO body END
+  | DO body END
+  | DO PIPE params PIPE body END
+  | EQUALS expr
+  ;
+
+params = param ( COMMA param )* | (* empty *) ;
+
+param
+  = pattern
+  | LOWER_IDENT COLON type_expr                   (* typed param *)
+  | LOWER_IDENT COLON type_expr EQUALS expr       (* typed param with default *)
+  | LOWER_IDENT EQUALS expr                       (* param with default *)
+  ;
+
+(* Type annotations: *)
+(*   :> means implicit This as first param — used inside make blocks *)
+(*      e.g. modulo :> This -> This  means  This -> This -> This *)
+(*   :  means full explicit signature — used at top level *)
+(*      e.g. element : String -> [String] -> Element *)
+type_annotation
+  = LOWER_IDENT TYPE_ANNOTATION type_expr
+  | LOWER_IDENT COLON type_expr
+  ;
+
+
+(* ===== Main ===== *)
+
+main_block = MAIN DO body END ;
+
+(* ===== Compiled ===== *)
+
+compiled_block = COMPILED DO compiled_body END ;
+
+compiled_body = compiled_item* ;
+
+compiled_item
+  = LET LOWER_IDENT EQUALS expr
+  | UPPER_IDENT EQUALS expr
+  | expr DOT EACH DO PIPE LOWER_IDENT PIPE compiled_body END
+  | type_def
+  | function_def
+  | make_def
+  | SPLICE_IDENT TYPE_ANNOTATION type_expr
+  | SPLICE_IDENT COLON type_expr
+  | SPLICE_IDENT LPAREN params RPAREN DO body END
+  ;
+
+(* ===== Using ===== *)
+
+using_block = USING type_name DO body END ;
+
+(* ===== Pragma ===== *)
+
+pragma = HASH_LBRACKET UPPER_IDENT ( COMMA UPPER_IDENT )* RBRACKET ;
+
+(* ===== Expressions ===== *)
+
+expr
+  = literal
+  | LOWER_IDENT
+  | UPPER_IDENT
+  | THIS
+  | expr DOT LOWER_IDENT                         (* UFCS method call *)
+  | expr DOT LOWER_IDENT LPAREN args RPAREN      (* UFCS method call with args *)
+  | expr DOT LOWER_IDENT block                   (* UFCS method call with block *)
+  | expr DOT LOWER_IDENT LPAREN args RPAREN block (* UFCS method call with args and block *)
+  | expr DOT LOWER_IDENT BANG                    (* mutating call: x.method!() — reassigns var *)
+  | expr DOT LOWER_IDENT BANG LPAREN args RPAREN (* mutating call with args *)
+  | expr DOT LOWER_IDENT BANG block              (* mutating call with block *)
+  | expr DOT LOWER_IDENT BANG LPAREN args RPAREN block (* mutating call with args and block *)
+  | LOWER_IDENT LPAREN args RPAREN               (* function call *)
+  | LOWER_IDENT block                            (* function call with block *)
+  | LOWER_IDENT LPAREN args RPAREN block         (* function call with args and block *)
+  | UPPER_IDENT LBRACE record_init RBRACE        (* record construction *)
+  | expr binary_op expr                          (* binary operation *)
+  | unary_op expr                                (* unary operation *)
+  | expr QUESTION                                (* error propagation *)
+  | LPAREN expr ( COMMA expr )+ RPAREN           (* tuple *)
+  | LBRACKET list_items? RBRACKET                (* list literal *)
+  | LBRACE map_items? RBRACE                     (* map literal *)
+  | range_expr
+  | if_expr
+  | match_expr
+  | receive_expr
+  | loop_expr
+  | let_expr
+  | var_expr
+  | assign_expr
+  | return_expr
+  | spawn_expr
+  | lambda
+  | shorthand_lambda
+  | spread_expr
+  | expr IF expr                                 (* trailing conditional *)
+  ;
+
+(* ===== Literals ===== *)
+
+literal
+  = INTEGER
+  | FLOAT
+  | STRING
+  | TRUE
+  | FALSE
+  | NONE
+  | atom_literal
+  ;
+
+atom_literal = COLON LOWER_IDENT ;
+
+(* ===== Operators ===== *)
+
+binary_op
+  = PLUS | MINUS | STAR | SLASH | PERCENT
+  | EQ_EQ | NOT_EQ | LESS_THAN | GREATER_THAN | LESS_EQ | GREATER_EQ
+  | AND_AND | PIPE_PIPE
+  | DOT_DOT
+  ;
+
+unary_op = MINUS | BANG ;
+
+(* ===== Collections ===== *)
+
+list_items = expr ( COMMA expr )* ( PIPE expr )? ;
+
+map_items = map_entry ( COMMA map_entry )* ;
+
+map_entry = expr COLON expr ;
+
+record_init = record_field_init ( COMMA record_field_init )* ;
+
+record_field_init
+  = LOWER_IDENT COLON expr
+  | LOWER_IDENT DOT_DOT                          (* shorthand: name: name *)
+  ;
+
+(* ===== Range ===== *)
+
+range_expr = expr DOT_DOT expr ;
+
+(* ===== Control Flow ===== *)
+
+if_expr
+  = IF expr DO body END
+  | IF expr DO body ELSE DO body END
+  | IF expr DO body ( ELIF expr DO body )* ELSE DO body END
+  ;
+
+match_expr = MATCH expr DO match_clause+ END ;
+
+match_clause = pattern ( COMMA pattern )* ARROW expr ;
+
+receive_expr
+  = RECEIVE DO match_clause+ END
+  | RECEIVE TIMEOUT COLON expr DO match_clause+ AFTER ARROW expr END
+  ;
+
+loop_expr = LOOP DO body END ;
+
+(* ===== Let / Var / Assignment ===== *)
+
+let_expr = LET pattern EQUALS expr ;
+
+var_expr = VAR LOWER_IDENT EQUALS expr ;
+
+assign_expr = LOWER_IDENT EQUALS expr ;
+
+return_expr = RETURN expr ;
+
+(* ===== Spawn ===== *)
+
+spawn_expr = SPAWN DO body END ;
+
+(* ===== Lambdas ===== *)
+
+lambda
+  = LBRACE PIPE params PIPE expr RBRACE           (* inline lambda *)
+  | LBRACE expr RBRACE                            (* zero-arg lambda *)
+  | DO PIPE params PIPE body END                  (* multi-line lambda *)
+  ;
+
+shorthand_lambda
+  = AMP DOT LOWER_IDENT                           (* &.method *)
+  | AMP DOT LOWER_IDENT LPAREN args RPAREN        (* &.method(args) *)
+  | AMP LOWER_IDENT                               (* &function *)
+  ;
+
+spread_expr = DOT_DOT_DOT expr ;
+
+(* ===== Blocks ===== *)
+
+block
+  = DO body END
+  | DO PIPE params PIPE body END
+  | LBRACE PIPE params PIPE expr RBRACE
+  | LBRACE expr RBRACE
+  ;
+
+body = expr* ;
+
+(* ===== Patterns ===== *)
+
+pattern
+  = literal
+  | LOWER_IDENT                                   (* variable binding *)
+  | UNDERSCORE                                    (* wildcard *)
+  | AT pattern                                    (* match on this *)
+  | UPPER_IDENT LPAREN pattern ( COMMA pattern )* RPAREN  (* constructor pattern *)
+  | LBRACE field_pattern ( COMMA field_pattern )* RBRACE  (* record/map destructuring *)
+  | LBRACKET list_pattern RBRACKET                (* list pattern *)
+  | LPAREN pattern ( COMMA pattern )* RPAREN      (* tuple pattern *)
+  ;
+
+field_pattern
+  = LOWER_IDENT                                   (* shorthand: name binds to field name *)
+  | LOWER_IDENT COLON pattern                     (* field: pattern *)
+  | STRING COLON pattern                          (* map string key pattern *)
+  ;
+
+list_pattern
+  = (* empty *)
+  | pattern ( COMMA pattern )* ( PIPE pattern )?
+  ;
+
+(* ===== Arguments ===== *)
+
+args = arg ( COMMA arg )* ;
+
+arg
+  = expr
+  | LOWER_IDENT COLON expr                        (* named argument *)
+  ;
+
+(* ===== Tokens ===== *)
+
+(* Keywords *)
+AFTER    = "after" ;
+BLOCK    = "Block" ;
+COMPILED = "compiled" ;
+DO       = "do" ;
+ELIF     = "elif" ;
+ELSE     = "else" ;
+END      = "end" ;
+FALSE    = "false" ;
+FINAL    = "final" ;
+FOUL     = "foul" ;
+IF       = "if" ;
+LET      = "let" ;
+LOOP     = "loop" ;
+MAIN     = "main" ;
+MAKE     = "make" ;
+MATCH    = "match" ;
+MODULE   = "module" ;
+NONE     = "None" ;
+PRIVATE  = "private" ;
+PUBLIC   = "public" ;
+RECEIVE  = "receive" ;
+RECORD   = "record" ;
+RETURN   = "return" ;
+SPAWN    = "spawn" ;
+STATIC   = "static" ;
+THIS     = "this" ;
+TIMEOUT  = "timeout" ;
+TRUE     = "true" ;
+TYPE     = "type" ;
+USING    = "using" ;
+VAR      = "var" ;
+
+(* Symbols *)
+ARROW        = "->" ;
+AMP          = "&" ;
+AT           = "@" ;
+BANG         = "!" ;
+COLON        = ":" ;
+COMMA        = "," ;
+DOT          = "." ;
+DOT_DOT      = ".." ;
+DOT_DOT_DOT  = "..." ;
+EQUALS       = "=" ;
+EQ_EQ        = "==" ;
+GREATER_THAN = ">" ;
+GREATER_EQ   = ">=" ;
+HASH_LBRACKET = "#[" ;
+LBRACE       = "{" ;
+LBRACKET     = "[" ;
+LESS_THAN    = "<" ;
+LESS_EQ      = "<=" ;
+LPAREN       = "(" ;
+MINUS        = "-" ;
+NOT_EQ       = "!=" ;
+PERCENT      = "%" ;
+PIPE         = "|" ;
+PIPE_PIPE    = "||" ;
+AND_AND      = "&&" ;
+PLUS         = "+" ;
+QUESTION     = "?" ;
+RBRACE       = "}" ;
+RBRACKET     = "]" ;
+RPAREN       = ")" ;
+SLASH        = "/" ;
+STAR         = "*" ;
+TYPE_ANNOTATION = ":>" ;
+UNDERSCORE   = "_" ;
+
+(* Identifiers *)
+LOWER_IDENT  = [a-z] [a-z0-9_]* "?"? ;
+UPPER_IDENT  = [A-Z] [A-Za-z0-9]* ;
+SPLICE_IDENT = "%" LOWER_IDENT ;
+
+(* Literals *)
+INTEGER = [0-9] [0-9_]* ;
+FLOAT   = [0-9] [0-9_]* "." [0-9] [0-9_]* ;
+STRING  = '"' string_content* '"' ;
+string_content = [^"$\\] | escape | interpolation ;
+escape = "\\" [nrt\\$"] ;
+interpolation = "$" "{" expr "}" ;
+
+(* Comments *)
+COMMENT = "#" [^\n]* ;
+
+(* Whitespace *)
+WS = [ \t\n\r]+ ;

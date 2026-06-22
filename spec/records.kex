@@ -1,0 +1,56 @@
+# Records and type dispatch
+# Expected output:
+# Alice
+# 30
+# (4.0, 6.0)
+# (5.0, 7.0, 9.0)
+
+record User do
+  name : String
+  age : Int
+end
+
+record Vec2 do
+  x : Float
+  y : Float
+end
+
+record Vec3 do
+  x : Float
+  y : Float
+  z : Float
+end
+
+make Vec2 do
+  let add(other: Vec2) -> Vec2 do
+    return Vec2 { x: this.x + other.x, y: this.y + other.y }
+  end
+
+  let to(target) -> String do
+    return "(${this.x}, ${this.y})"
+  end
+end
+
+make Vec3 do
+  let add(other: Vec3) -> Vec3 do
+    return Vec3 { x: this.x + other.x, y: this.y + other.y, z: this.z + other.z }
+  end
+
+  let to(target) -> String do
+    return "(${this.x}, ${this.y}, ${this.z})"
+  end
+end
+
+main do
+  let user = User { name: "Alice", age: 30 }
+  print(user.name)
+  print(user.age)
+
+  let a = Vec2 { x: 1.0, y: 2.0 }
+  let b = Vec2 { x: 3.0, y: 4.0 }
+  print(a.add(b).to(String))
+
+  let c = Vec3 { x: 1.0, y: 2.0, z: 3.0 }
+  let d = Vec3 { x: 4.0, y: 5.0, z: 6.0 }
+  print(c.add(d).to(String))
+end

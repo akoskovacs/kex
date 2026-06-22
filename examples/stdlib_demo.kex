@@ -1,0 +1,146 @@
+# Standard library demonstration
+
+record User do
+  name : String
+  age : Int
+end
+
+let factorial(0) = 1
+let factorial(n: Int) = n * factorial(n - 1)
+
+let fib(0) = 0
+let fib(1) = 1
+let fib(n: Int) = fib(n - 1) + fib(n - 2)
+
+let even?(n: Int) = n.modulo(2) == 0
+let odd?(n: Int) = !even?(n)
+
+main do
+  print("=== List Operations ===")
+
+  let nums = [10, 3, 7, 1, 9, 4, 6, 2, 8, 5]
+  print("nums: ${nums}")
+  print("sorted: ${nums.sort}")
+  print("reversed: ${nums.reverse}")
+  print("first 3: ${nums.take(3)}")
+  print("drop 7: ${nums.drop(7)}")
+  print("length: ${nums.length}")
+  print("sum: ${nums.sum}")
+  print("min: ${nums.min}")
+  print("max: ${nums.max}")
+
+  print("")
+  print("=== Higher-Order Functions ===")
+
+  let doubled = nums.map { |x| x * 2 }
+  print("doubled: ${doubled}")
+
+  let evens = nums.filter(&even?)
+  print("evens: ${evens}")
+
+  let odds = nums.reject(&even?)
+  print("odds: ${odds}")
+
+  let sum = nums.reduce(0) { |acc, x| acc + x }
+  print("reduce sum: ${sum}")
+
+  let product = [1, 2, 3, 4, 5].reduce(1) { |acc, x| acc * x }
+  print("reduce product: ${product}")
+
+  print("")
+  print("=== Predicates ===")
+
+  print("any > 8? ${nums.any? { |x| x > 8 }}")
+  print("all > 0? ${nums.all? { |x| x > 0 }}")
+  print("all > 5? ${nums.all? { |x| x > 5 }}")
+  print("count evens: ${nums.count(&even?)}")
+  print("count odds: ${nums.count(&odd?)}")
+
+  print("")
+  print("=== String Operations ===")
+
+  let greeting = "  Hello, Kex!  "
+  print("original: '${greeting}'")
+  print("trimmed: '${greeting.trim}'")
+  print("upcase: '${greeting.trim.upcase}'")
+  print("downcase: '${greeting.trim.downcase}'")
+  print("reversed: '${"hello".reverse}'")
+  print("contains 'Kex': ${greeting.contains?("Kex")}")
+  print("contains 'Ruby': ${greeting.contains?("Ruby")}")
+
+  let csv = "one,two,three,four"
+  print("split: ${csv.split(",")}")
+  print("joined: ${csv.split(",").join(" | ")}")
+
+  print("")
+  print("=== Recursion ===")
+
+  print("factorial(5) = ${factorial(5)}")
+  print("factorial(10) = ${factorial(10)}")
+
+  let fibs = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map(&fib)
+  print("fibonacci: ${fibs}")
+
+  print("")
+  print("=== Zip and Flatten ===")
+
+  let names = ["Alice", "Bob", "Charlie"]
+  let scores = [95, 87, 92]
+  let paired = names.zip(scores)
+  print("paired: ${paired}")
+
+  let nested = [[1, 2, 3], [4, 5], [6]]
+  print("nested: ${nested}")
+  print("flattened: ${nested.flatten}")
+
+  print("")
+  print("=== Pattern Matching ===")
+
+  let grade = match 87 do
+    n if n >= 90 -> "A"
+    n if n >= 80 -> "B"
+    n if n >= 70 -> "C"
+    n if n >= 60 -> "D"
+    _ -> "F"
+  end
+  print("grade for 87: ${grade}")
+
+  let describe = match nums.length do
+    0 -> "empty"
+    1 -> "single"
+    _ -> "many"
+  end
+  print("nums is: ${describe}")
+
+  print("")
+  print("=== Records ===")
+
+  let user = User { name: "Sam", age: 32 }
+  print("user: ${user.name}, age ${user.age}")
+
+  let users = [
+    User { name: "Alice", age: 30 },
+    User { name: "Bob", age: 17 },
+    User { name: "Charlie", age: 25 }
+  ]
+
+  let adults = users.filter { |u| u.age >= 18 }
+  print("adults: ${adults.length}")
+
+  let names_list = users.map { |u| u.name }
+  print("names: ${names_list}")
+
+  print("")
+  print("=== Mutation ===")
+
+  var counter = 0
+  [1, 2, 3, 4, 5].each do |n|
+    counter = counter + n
+  end
+  print("counter after each: ${counter}")
+
+  var list = [1, 2, 3]
+  list = list.push(4)
+  list = list.push(5)
+  print("pushed: ${list}")
+end

@@ -1,0 +1,68 @@
+# Type dispatch and pattern matching in make blocks
+
+record Vec2 do
+  x : Float
+  y : Float
+end
+
+record Vec3 do
+  x : Float
+  y : Float
+  z : Float
+end
+
+# Type dispatch — same method name, different types
+make Vec2 do
+  let add(other: Vec2) -> Vec2 do
+    return Vec2 { x: this.x + other.x, y: this.y + other.y }
+  end
+
+  let to(String) -> String do
+    return "(${this.x}, ${this.y})"
+  end
+end
+
+make Vec3 do
+  let add(other: Vec3) -> Vec3 do
+    return Vec3 { x: this.x + other.x, y: this.y + other.y, z: this.z + other.z }
+  end
+
+  let to(String) -> String do
+    return "(${this.x}, ${this.y}, ${this.z})"
+  end
+end
+
+# Pattern matching on this with @
+make [A] do
+  let first(@[]) = None
+  let first(@[x | _]) = x
+
+  let last(@[]) = None
+  let last(@[x]) = x
+
+  let empty?(@[]) = true
+  let empty?(@_) = false
+
+  let head(@[x | _]) = x
+  let tail(@[_ | rest]) = rest
+end
+
+main do
+  # Type dispatch
+  let a = Vec2 { x: 1.0, y: 2.0 }
+  let b = Vec2 { x: 3.0, y: 4.0 }
+  print(a.add(b).to(String))
+
+  let c = Vec3 { x: 1.0, y: 2.0, z: 3.0 }
+  let d = Vec3 { x: 4.0, y: 5.0, z: 6.0 }
+  print(c.add(d).to(String))
+
+  # @ pattern matching on lists
+  let list = [10, 20, 30]
+  print(list.first)
+  print([].first)
+  print(list.empty?)
+  print([].empty?)
+  print(list.head)
+  print(list.tail)
+end

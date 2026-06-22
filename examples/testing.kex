@@ -1,0 +1,65 @@
+# Testing — RSpec-style, stdlib framework
+
+using Test
+
+describe Integer do
+  describe "dividesBy?" do
+    it "returns true when divisible" do
+      assert 10.dividesBy?(5)
+      assert 12.dividesBy?(3)
+    end
+
+    it "returns false when not divisible" do
+      assert !7.dividesBy?(3)
+      assert !10.dividesBy?(3)
+    end
+  end
+
+  describe "even?" do
+    it "identifies even numbers" do
+      assert 4.even?
+      assert 0.even?
+      assert !3.even?
+    end
+  end
+end
+
+describe User do
+  let sample_user = User { name: "Alice", age: 30 }
+
+  describe "greet" do
+    it "greets by name" do
+      assert sample_user.greet == "Hi, Alice!"
+    end
+  end
+
+  describe "adult?" do
+    it "returns true for age >= 18" do
+      assert sample_user.adult?
+    end
+
+    it "returns false for age < 18" do
+      let child = User { name: "Kid", age: 10 }
+      assert !child.adult?
+    end
+  end
+end
+
+describe MyServer do
+  before do
+    Mock.File.expect(:read, "config.toml", returns: Ok("port=8080\nhost=localhost"))
+  end
+
+  describe "loadConfig" do
+    it "parses config file" do
+      let config = MyServer.loadConfig("config.toml")
+      assert config == Ok(Config { port: 8080, host: "localhost" })
+    end
+
+    it "returns error for missing file" do
+      Mock.File.expect(:read, "missing.toml", returns: Error(IOError(:not_found)))
+      let result = MyServer.loadConfig("missing.toml")
+      assert result.error?
+    end
+  end
+end

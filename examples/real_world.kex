@@ -1,0 +1,140 @@
+# A more realistic example: a small HTTP router/server
+
+module Http do
+  type Method = :get | :post | :put | :delete | :patch
+
+  record Request do
+    method : Method
+    path : String
+    headers : { String: String }
+    body : String? = None
+    params : { String: String } = {}
+  end
+
+  record Response do
+    status : Int
+    headers : { String: String } = {}
+    body : String = ""
+  end
+
+  type Handler = Request -> Response
+
+  record Route do
+    method : Method
+    pattern : String
+    handler : Handler
+  end
+
+  make Response do
+    let ok(body: String) -> Response do
+      return Response { status: 200, body: body }
+    end
+
+    let notFound -> Response do
+      return Response { status: 404, body: "Not Found" }
+    end
+
+    let json(data: String) -> Response do
+      return Response {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+        body: data
+      }
+    end
+
+    let redirect(url: String) -> Response do
+      return Response {
+        status: 302,
+        headers: { "Location": url }
+      }
+    end
+  end
+
+  module Router do
+    record Config do
+      routes : [Route] = []
+      middleware : [Handler -> Handler] = []
+    end
+
+    make Config do
+      let get(pattern: String, handler: Handler) -> Config do
+        let route = Route { method: :get, pattern: pattern, handler: handler }
+        return Config { routes: [route | this.routes], middleware: this.middleware }
+      end
+
+      let post(pattern: String, handler: Handler) -> Config do
+        let route = Route { method: :post, pattern: pattern, handler: handler }
+        return Config { routes: [route | this.routes], middleware: this.middleware }
+      end
+
+      let use(mw: Handler -> Handler) -> Config do
+        return Config { routes: this.routes, middleware: [mw | this.middleware] }
+      end
+
+      private do
+        let matchRoute({ routes }, request: Request) -> Route? do
+          return routes.find do |route|
+            route.method == request.method && pathMatches?(route.pattern, request.path)
+          end
+        end
+
+        let pathMatches?(pattern: String, path: String) -> Bool do
+          # Simple matching — would be more complex in real impl
+          return pattern == path
+        end
+      end
+
+      let handle({ }, request: Request) -> Response do
+        match this.matchRoute(request) do
+          Just(route) -> route.handler(request)
+          None -> Response.notFound
+        end
+      end
+    end
+  end
+end
+
+# Using the router
+module App do
+  using Http do
+    let router = Router.Config {}
+      .use(&logMiddleware)
+      .get("/", &handleHome)
+      .get("/users", &handleUsers)
+      .post("/users", &handleCreateUser)
+
+    let handleHome(req: Request) -> Response do
+      return Response.ok("Welcome!")
+    end
+
+    let handleUsers(req: Request) -> Response do
+      let users = UserService.getAll()
+      return Response.json(users.to(String))
+    end
+
+    let handleCreateUser(req: Request) -> Response do
+      match req.body do
+        Just(body) -> do
+          let result = UserService.create(body)
+          match result do
+            Ok(user) -> Response.json(user.to(String))
+            Error(e) -> Response { status: 400, body: e.message }
+          end
+        end
+        None -> Response { status: 400, body: "Body required" }
+      end
+    end
+
+    let logMiddleware(handler: Handler) -> Handler do
+      return { |req|
+        Logger.info("${req.method} ${req.path}")
+        handler(req)
+      }
+    end
+  end
+
+  foul let start do
+    Logger.info("Starting server on port 8080")
+    Http.Server.listen(8080, router)
+  end
+end

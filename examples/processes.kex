@@ -1,0 +1,74 @@
+# Process model — typed processes, supervision, tasks
+
+type CounterMessage = :increment | :reset | (:get, Process<Int>)
+
+foul let startCounter -> Process<CounterMessage> do
+  return spawn do
+    var state = 0
+    loop do
+      receive do
+        :increment -> state = state + 1
+        :reset -> state = 0
+        (:get, sender) -> sender.send(state)
+      end
+    end
+  end
+end
+
+# Functional style (no var)
+foul let startCounterPure -> Process<CounterMessage> do
+  return spawn do
+    let loop(state: Int) do
+      receive do
+        :increment -> loop(state + 1)
+        :reset -> loop(0)
+        (:get, sender) -> do
+          sender.send(state)
+          loop(state)
+        end
+      end
+    end
+    loop(0)
+  end
+end
+
+# Tasks for simple async
+foul let fetchAll(ids: [Int]) -> [Result<User, Error>] do
+  let tasks = ids.map do |id|
+    Task.start { fetchUser(id) }
+  end
+
+  return tasks.map { |t| t.await(timeout: 5000) }
+end
+
+# Supervision tree
+foul let startApp do
+  Supervisor.start(strategy: :one_for_one) do
+    worker(Database, args: [config.db_url])
+    worker(Cache)
+    supervisor(strategy: :one_for_all) do
+      worker(WebServer, args: [config.port])
+      worker(WebSocket)
+    end
+  end
+end
+
+# Typed process that only accepts specific messages
+type ChatMessage = (:join, String) | (:leave, String) | (:msg, String, String)
+
+foul let startChat -> Process<ChatMessage> do
+  return spawn do
+    var users: [String] = []
+    loop do
+      receive do
+        (:join, name) -> users = [name | users]
+        (:leave, name) -> users = users.reject { |u| u == name }
+        (:msg, from, text) -> do
+          users.each do |user|
+            send(user, "${from}: ${text}")
+          end
+        end
+      end
+    end
+  end
+end

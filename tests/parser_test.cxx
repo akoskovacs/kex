@@ -1,0 +1,528 @@
+#include "test.hxx"
+#include "../src/lexer/lexer.hxx"
+#include "../src/parser/parser.hxx"
+
+using namespace kex;
+using namespace test;
+
+auto parse(const std::string& source) -> ast::Program {
+    Lexer lexer(source);
+    auto tokens = lexer.tokenizeAll();
+    Parser parser(std::move(tokens));
+    return parser.parseProgram();
+}
+
+auto parseFails(const std::string& source) -> bool {
+    try {
+        parse(source);
+        return false;
+    } catch (const std::runtime_error&) {
+        return true;
+    }
+}
+
+auto itemCount(const std::string& source) -> size_t {
+    return parse(source).items.size();
+}
+
+template<typename T>
+auto firstItemIs(const ast::Program& program) -> bool {
+    if (program.items.empty()) return false;
+    return std::holds_alternative<T>(program.items[0]);
+}
+
+int main() {
+    describe("Parser — Top Level", []() {
+        it("parses empty program", []() {
+            auto program = parse("");
+            assertEqual(program.items.size(), size_t(0));
+        });
+
+        it("parses function definitions", []() {
+            auto program = parse("let double(n: Int) = n * 2");
+            assertEqual(program.items.size(), size_t(1));
+            assertTrue(firstItemIs<std::unique_ptr<ast::FunctionDef>>(program));
+        });
+
+        it("parses multiple function clauses", []() {
+            auto program = parse(
+                "let factorial(0) = 1\n"
+                "let factorial(n: Int) = n * factorial(n - 1)\n"
+            );
+            assertEqual(program.items.size(), size_t(2));
+        });
+
+        it("parses main block", []() {
+            auto program = parse("main do\n  let x = 5\nend");
+            assertEqual(program.items.size(), size_t(1));
+            assertTrue(firstItemIs<std::unique_ptr<ast::MainBlock>>(program));
+        });
+
+        it("parses foul function", []() {
+            auto program = parse("foul let readFile(path: String) = BuiltIn.read(path)");
+            assertTrue(firstItemIs<std::unique_ptr<ast::FunctionDef>>(program));
+            auto& func = std::get<std::unique_ptr<ast::FunctionDef>>(program.items[0]);
+            assertTrue(func->isFoul);
+        });
+    });
+
+    describe("Parser — Modules", []() {
+        it("parses simple module", []() {
+            auto program = parse("module Math do\nend");
+            assertTrue(firstItemIs<std::unique_ptr<ast::ModuleDef>>(program));
+            auto& mod = std::get<std::unique_ptr<ast::ModuleDef>>(program.items[0]);
+            assertEqual(mod->name, std::string("Math"));
+        });
+
+        it("parses foul module", []() {
+            auto program = parse("foul module IO do\nend");
+            auto& mod = std::get<std::unique_ptr<ast::ModuleDef>>(program.items[0]);
+            assertTrue(mod->isFoul);
+        });
+
+        it("parses module with functions", []() {
+            auto program = parse(
+                "module Math do\n"
+                "  let abs(n: Int) = n\n"
+                "end\n"
+            );
+            auto& mod = std::get<std::unique_ptr<ast::ModuleDef>>(program.items[0]);
+            assertEqual(mod->body.size(), size_t(1));
+        });
+
+        it("parses nested modules", []() {
+            auto program = parse(
+                "module A do\n"
+                "  module B do\n"
+                "  end\n"
+                "end\n"
+            );
+            auto& mod = std::get<std::unique_ptr<ast::ModuleDef>>(program.items[0]);
+            assertEqual(mod->body.size(), size_t(1));
+        });
+    });
+
+    describe("Parser — Types", []() {
+        it("parses simple type declaration", []() {
+            auto program = parse("type Integer");
+            assertTrue(firstItemIs<std::unique_ptr<ast::TypeDef>>(program));
+        });
+
+        it("parses type with inheritance", []() {
+            auto program = parse("type Integer < Number, Comparable");
+            auto& td = std::get<std::unique_ptr<ast::TypeDef>>(program.items[0]);
+            assertEqual(td->name, std::string("Integer"));
+            assertEqual(td->parents.size(), size_t(2));
+        });
+
+        it("parses sum type", []() {
+            auto program = parse("type Option<A> = Just(A) | Nothing");
+            auto& td = std::get<std::unique_ptr<ast::TypeDef>>(program.items[0]);
+            assertEqual(td->name, std::string("Option"));
+            assertEqual(td->typeParams.size(), size_t(1));
+            assertTrue(td->variants.has_value());
+            assertEqual(td->variants->size(), size_t(2));
+        });
+
+        it("parses multiline sum type", []() {
+            auto program = parse(
+                "type Shape\n"
+                "  = Circle(Float)\n"
+                "  | Rectangle(Float, Float)\n"
+            );
+            auto& td = std::get<std::unique_ptr<ast::TypeDef>>(program.items[0]);
+            assertEqual(td->variants->size(), size_t(2));
+        });
+
+        it("parses type alias with function type", []() {
+            auto program = parse("type Handler = Request -> Response");
+            auto& td = std::get<std::unique_ptr<ast::TypeDef>>(program.items[0]);
+            assertTrue(td->variants.has_value());
+            assertEqual(td->variants->size(), size_t(1));
+        });
+
+        it("parses abstract type with required functions", []() {
+            auto program = parse(
+                "type Comparable do\n"
+                "  compare :> This -> This -> Int\n"
+                "end\n"
+            );
+            auto& td = std::get<std::unique_ptr<ast::TypeDef>>(program.items[0]);
+            assertTrue(td->abstractFunctions.has_value());
+            assertEqual(td->abstractFunctions->size(), size_t(1));
+        });
+    });
+
+    describe("Parser — Records", []() {
+        it("parses simple record", []() {
+            auto program = parse(
+                "record User do\n"
+                "  name : String\n"
+                "  age : Int\n"
+                "end\n"
+            );
+            assertTrue(firstItemIs<std::unique_ptr<ast::RecordDef>>(program));
+            auto& rec = std::get<std::unique_ptr<ast::RecordDef>>(program.items[0]);
+            assertEqual(rec->name, std::string("User"));
+            assertEqual(rec->fields.size(), size_t(2));
+        });
+
+        it("parses record with defaults", []() {
+            auto program = parse(
+                "record Config do\n"
+                "  port : Int = 8080\n"
+                "  host : String = \"localhost\"\n"
+                "end\n"
+            );
+            auto& rec = std::get<std::unique_ptr<ast::RecordDef>>(program.items[0]);
+            assertTrue(rec->fields[0].defaultValue.has_value());
+            assertTrue(rec->fields[1].defaultValue.has_value());
+        });
+
+        it("parses record with type params", []() {
+            auto program = parse(
+                "record Pair<A, B> do\n"
+                "  first : A\n"
+                "  second : B\n"
+                "end\n"
+            );
+            auto& rec = std::get<std::unique_ptr<ast::RecordDef>>(program.items[0]);
+            assertEqual(rec->typeParams.size(), size_t(2));
+        });
+    });
+
+    describe("Parser — Make Blocks", []() {
+        it("parses make with type target", []() {
+            auto program = parse(
+                "make Integer do\n"
+                "  let double = this * 2\n"
+                "end\n"
+            );
+            assertTrue(firstItemIs<std::unique_ptr<ast::MakeDef>>(program));
+        });
+
+        it("parses make with final modifier", []() {
+            auto program = parse(
+                "make final: Bool do\n"
+                "  let negate = !this\n"
+                "end\n"
+            );
+            auto& make = std::get<std::unique_ptr<ast::MakeDef>>(program.items[0]);
+            assertTrue(make->isFinal);
+        });
+
+        it("parses make with list type", []() {
+            auto program = parse(
+                "make [A] do\n"
+                "  let first(@[x | _]) = Just(x)\n"
+                "end\n"
+            );
+            assertTrue(firstItemIs<std::unique_ptr<ast::MakeDef>>(program));
+        });
+
+        it("parses make with specialized type", []() {
+            auto program = parse(
+                "make [Int] do\n"
+                "  let sum = this.reduce(0, &.+)\n"
+                "end\n"
+            );
+            assertTrue(firstItemIs<std::unique_ptr<ast::MakeDef>>(program));
+        });
+    });
+
+    describe("Parser — Expressions", []() {
+        it("parses let binding", []() {
+            auto program = parse("main do\n  let x = 5\nend");
+            auto& main = std::get<std::unique_ptr<ast::MainBlock>>(program.items[0]);
+            assertEqual(main->body.size(), size_t(1));
+        });
+
+        it("parses var binding", []() {
+            auto program = parse("main do\n  var x = 0\nend");
+            auto& main = std::get<std::unique_ptr<ast::MainBlock>>(program.items[0]);
+            assertEqual(main->body.size(), size_t(1));
+        });
+
+        it("parses binary operations", []() {
+            auto program = parse("main do\n  let x = 1 + 2 * 3\nend");
+            auto& main = std::get<std::unique_ptr<ast::MainBlock>>(program.items[0]);
+            assertEqual(main->body.size(), size_t(1));
+        });
+
+        it("parses method calls", []() {
+            auto program = parse("main do\n  let x = list.map(&.name)\nend");
+            auto& main = std::get<std::unique_ptr<ast::MainBlock>>(program.items[0]);
+            assertEqual(main->body.size(), size_t(1));
+        });
+
+        it("parses mutating calls", []() {
+            auto program = parse("main do\n  var x = [1, 2]\n  x.push!(3)\nend");
+            auto& main = std::get<std::unique_ptr<ast::MainBlock>>(program.items[0]);
+            assertEqual(main->body.size(), size_t(2));
+        });
+
+        it("parses error propagation", []() {
+            auto program = parse("main do\n  let x = foo()?\nend");
+            auto& main = std::get<std::unique_ptr<ast::MainBlock>>(program.items[0]);
+            assertEqual(main->body.size(), size_t(1));
+        });
+
+        it("parses if expression", []() {
+            auto program = parse(
+                "main do\n"
+                "  if x > 0 do\n"
+                "    x\n"
+                "  else do\n"
+                "    -x\n"
+                "  end\n"
+                "end\n"
+            );
+            auto& main = std::get<std::unique_ptr<ast::MainBlock>>(program.items[0]);
+            assertEqual(main->body.size(), size_t(1));
+        });
+
+        it("parses match expression", []() {
+            auto program = parse(
+                "main do\n"
+                "  match x do\n"
+                "    0 -> \"zero\"\n"
+                "    _ -> \"other\"\n"
+                "  end\n"
+                "end\n"
+            );
+            auto& main = std::get<std::unique_ptr<ast::MainBlock>>(program.items[0]);
+            assertEqual(main->body.size(), size_t(1));
+        });
+
+        it("parses trailing if", []() {
+            auto program = parse("main do\n  return x if condition\nend");
+            auto& main = std::get<std::unique_ptr<ast::MainBlock>>(program.items[0]);
+            assertEqual(main->body.size(), size_t(1));
+        });
+
+        it("parses spawn", []() {
+            auto program = parse(
+                "main do\n"
+                "  let pid = spawn do\n"
+                "    loop do\n"
+                "      receive do\n"
+                "        :ping -> :pong\n"
+                "      end\n"
+                "    end\n"
+                "  end\n"
+                "end\n"
+            );
+            auto& main = std::get<std::unique_ptr<ast::MainBlock>>(program.items[0]);
+            assertEqual(main->body.size(), size_t(1));
+        });
+    });
+
+    describe("Parser — Lambdas", []() {
+        it("parses inline lambda", []() {
+            auto program = parse("main do\n  let f = { |x| x + 1 }\nend");
+            auto& main = std::get<std::unique_ptr<ast::MainBlock>>(program.items[0]);
+            assertEqual(main->body.size(), size_t(1));
+        });
+
+        it("parses zero-arg lambda", []() {
+            auto program = parse("main do\n  let f = { 42 }\nend");
+            auto& main = std::get<std::unique_ptr<ast::MainBlock>>(program.items[0]);
+            assertEqual(main->body.size(), size_t(1));
+        });
+
+        it("parses do-end lambda", []() {
+            auto program = parse(
+                "main do\n"
+                "  list.each do |x|\n"
+                "    print(x)\n"
+                "  end\n"
+                "end\n"
+            );
+            auto& main = std::get<std::unique_ptr<ast::MainBlock>>(program.items[0]);
+            assertEqual(main->body.size(), size_t(1));
+        });
+
+        it("parses shorthand method lambda", []() {
+            auto program = parse("main do\n  let x = list.map(&.name)\nend");
+            auto& main = std::get<std::unique_ptr<ast::MainBlock>>(program.items[0]);
+            assertEqual(main->body.size(), size_t(1));
+        });
+
+        it("parses shorthand function lambda", []() {
+            auto program = parse("main do\n  let x = list.sort(&compare)\nend");
+            auto& main = std::get<std::unique_ptr<ast::MainBlock>>(program.items[0]);
+            assertEqual(main->body.size(), size_t(1));
+        });
+
+        it("parses shorthand operator lambda", []() {
+            auto program = parse("main do\n  let x = list.map(&.+ 1)\nend");
+            auto& main = std::get<std::unique_ptr<ast::MainBlock>>(program.items[0]);
+            assertEqual(main->body.size(), size_t(1));
+        });
+    });
+
+    describe("Parser — Patterns", []() {
+        it("parses destructuring let", []() {
+            auto program = parse("main do\n  let { name, age } = user\nend");
+            auto& main = std::get<std::unique_ptr<ast::MainBlock>>(program.items[0]);
+            assertEqual(main->body.size(), size_t(1));
+        });
+
+        it("parses tuple destructuring", []() {
+            auto program = parse("main do\n  let (x, y) = point\nend");
+            auto& main = std::get<std::unique_ptr<ast::MainBlock>>(program.items[0]);
+            assertEqual(main->body.size(), size_t(1));
+        });
+
+        it("parses list destructuring", []() {
+            auto program = parse("main do\n  let [first | rest] = list\nend");
+            auto& main = std::get<std::unique_ptr<ast::MainBlock>>(program.items[0]);
+            assertEqual(main->body.size(), size_t(1));
+        });
+
+        it("parses @ pattern in make", []() {
+            auto program = parse(
+                "make [A] do\n"
+                "  let first(@[]) = Nothing\n"
+                "  let first(@[x | _]) = Just(x)\n"
+                "end\n"
+            );
+            assertTrue(firstItemIs<std::unique_ptr<ast::MakeDef>>(program));
+        });
+
+        it("parses constructor patterns in match", []() {
+            auto program = parse(
+                "main do\n"
+                "  match opt do\n"
+                "    Just(x) -> x\n"
+                "    Nothing -> 0\n"
+                "  end\n"
+                "end\n"
+            );
+            auto& main = std::get<std::unique_ptr<ast::MainBlock>>(program.items[0]);
+            assertEqual(main->body.size(), size_t(1));
+        });
+
+        it("parses nested destructuring", []() {
+            auto program = parse(
+                "make Foo do\n"
+                "  let bar({ config: { timeout: t } }) = t\n"
+                "end\n"
+            );
+            assertTrue(firstItemIs<std::unique_ptr<ast::MakeDef>>(program));
+        });
+    });
+
+    describe("Parser — Collections", []() {
+        it("parses list literal", []() {
+            auto program = parse("main do\n  let x = [1, 2, 3]\nend");
+            auto& main = std::get<std::unique_ptr<ast::MainBlock>>(program.items[0]);
+            assertEqual(main->body.size(), size_t(1));
+        });
+
+        it("parses map literal", []() {
+            auto program = parse("main do\n  let x = { \"a\": 1, \"b\": 2 }\nend");
+            auto& main = std::get<std::unique_ptr<ast::MainBlock>>(program.items[0]);
+            assertEqual(main->body.size(), size_t(1));
+        });
+
+        it("parses tuple", []() {
+            auto program = parse("main do\n  let x = (1, \"hello\", true)\nend");
+            auto& main = std::get<std::unique_ptr<ast::MainBlock>>(program.items[0]);
+            assertEqual(main->body.size(), size_t(1));
+        });
+
+        it("parses range", []() {
+            auto program = parse("main do\n  let x = 1..10\nend");
+            auto& main = std::get<std::unique_ptr<ast::MainBlock>>(program.items[0]);
+            assertEqual(main->body.size(), size_t(1));
+        });
+
+        it("parses bracket access", []() {
+            auto program = parse("main do\n  let x = map[\"key\"]\nend");
+            auto& main = std::get<std::unique_ptr<ast::MainBlock>>(program.items[0]);
+            assertEqual(main->body.size(), size_t(1));
+        });
+    });
+
+    describe("Parser — Type Expressions", []() {
+        it("parses simple type", []() {
+            auto program = parse("let foo(x: Int) = x");
+            assertTrue(firstItemIs<std::unique_ptr<ast::FunctionDef>>(program));
+        });
+
+        it("parses generic type", []() {
+            auto program = parse("let foo(x: Map<String, Int>) = x");
+            assertTrue(firstItemIs<std::unique_ptr<ast::FunctionDef>>(program));
+        });
+
+        it("parses optional type", []() {
+            auto program = parse("let foo(x: String?) = x");
+            assertTrue(firstItemIs<std::unique_ptr<ast::FunctionDef>>(program));
+        });
+
+        it("parses function type", []() {
+            auto program = parse("let foo(f: Int -> String) = f(1)");
+            assertTrue(firstItemIs<std::unique_ptr<ast::FunctionDef>>(program));
+        });
+
+        it("parses list type", []() {
+            auto program = parse("let foo(x: [Int]) = x");
+            assertTrue(firstItemIs<std::unique_ptr<ast::FunctionDef>>(program));
+        });
+
+        it("parses Block type", []() {
+            auto program = parse("let foo(block: Block<[Int]>) = block()");
+            assertTrue(firstItemIs<std::unique_ptr<ast::FunctionDef>>(program));
+        });
+    });
+
+    describe("Parser — Using", []() {
+        it("parses using with block", []() {
+            auto program = parse(
+                "using Html.Language do\n"
+                "  html do\n"
+                "  end\n"
+                "end\n"
+            );
+            assertTrue(firstItemIs<std::unique_ptr<ast::UsingBlock>>(program));
+        });
+
+        it("parses bare using", []() {
+            auto program = parse("using Test\n");
+            assertTrue(firstItemIs<std::unique_ptr<ast::UsingBlock>>(program));
+        });
+    });
+
+    describe("Parser — Pragma", []() {
+        it("parses single requirement", []() {
+            auto program = parse("#[IO]\n");
+            assertTrue(firstItemIs<std::unique_ptr<ast::Pragma>>(program));
+            auto& pragma = std::get<std::unique_ptr<ast::Pragma>>(program.items[0]);
+            assertEqual(pragma->requirements.size(), size_t(1));
+            assertEqual(pragma->requirements[0], std::string("IO"));
+        });
+
+        it("parses multiple requirements", []() {
+            auto program = parse("#[Process, IO]\n");
+            auto& pragma = std::get<std::unique_ptr<ast::Pragma>>(program.items[0]);
+            assertEqual(pragma->requirements.size(), size_t(2));
+        });
+    });
+
+    describe("Parser — Error Cases", []() {
+        it("rejects unclosed do block", []() {
+            assertTrue(parseFails("main do\n  let x = 5\n"));
+        });
+
+        it("rejects unclosed module", []() {
+            assertTrue(parseFails("module Foo do\n"));
+        });
+
+        it("rejects invalid token at top level", []() {
+            assertTrue(parseFails("+ 5"));
+        });
+    });
+
+    return runAll();
+}

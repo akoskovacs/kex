@@ -1,0 +1,97 @@
+# 2D and 3D Vector math
+
+record Vector2D do
+  x : Float
+  y : Float
+end
+
+record Vector3D do
+  x : Float
+  y : Float
+  z : Float
+end
+
+let vec2Add(a: Vector2D, b: Vector2D) -> Vector2D do
+  return Vector2D { x: a.x + b.x, y: a.y + b.y }
+end
+
+let vec2Scale(v: Vector2D, factor: Float) -> Vector2D do
+  return Vector2D { x: v.x * factor, y: v.y * factor }
+end
+
+let vec2Dot(a: Vector2D, b: Vector2D) -> Float do
+  return a.x * b.x + a.y * b.y
+end
+
+let vec2LengthSq(v: Vector2D) -> Float do
+  return v.x * v.x + v.y * v.y
+end
+
+let vec2Str(v: Vector2D) -> String do
+  return "(${v.x}, ${v.y})"
+end
+
+let vec3Add(a: Vector3D, b: Vector3D) -> Vector3D do
+  return Vector3D { x: a.x + b.x, y: a.y + b.y, z: a.z + b.z }
+end
+
+let vec3Scale(v: Vector3D, factor: Float) -> Vector3D do
+  return Vector3D { x: v.x * factor, y: v.y * factor, z: v.z * factor }
+end
+
+let vec3Dot(a: Vector3D, b: Vector3D) -> Float do
+  return a.x * b.x + a.y * b.y + a.z * b.z
+end
+
+let vec3Cross(a: Vector3D, b: Vector3D) -> Vector3D do
+  return Vector3D {
+    x: a.y * b.z - a.z * b.y,
+    y: a.z * b.x - a.x * b.z,
+    z: a.x * b.y - a.y * b.x
+  }
+end
+
+let vec3LengthSq(v: Vector3D) -> Float do
+  return v.x * v.x + v.y * v.y + v.z * v.z
+end
+
+let vec3Str(v: Vector3D) -> String do
+  return "(${v.x}, ${v.y}, ${v.z})"
+end
+
+main do
+  # 2D vectors
+  let a = Vector2D { x: 3.0, y: 4.0 }
+  let b = Vector2D { x: 1.0, y: 2.0 }
+
+  let sum = vec2Add(a, b)
+  print("a + b = ${vec2Str(sum)}")
+
+  let scaled = vec2Scale(a, 2.0)
+  print("a * 2 = ${vec2Str(scaled)}")
+
+  let d = vec2Dot(a, b)
+  print("a . b = ${d}")
+
+  let lenSq = vec2LengthSq(a)
+  print("|a|^2 = ${lenSq}")
+
+  # 3D vectors
+  let v1 = Vector3D { x: 1.0, y: 0.0, z: 0.0 }
+  let v2 = Vector3D { x: 0.0, y: 1.0, z: 0.0 }
+
+  let cp = vec3Cross(v1, v2)
+  print("v1 x v2 = ${vec3Str(cp)}")
+
+  let v3 = Vector3D { x: 1.0, y: 2.0, z: 3.0 }
+  let v4 = Vector3D { x: 4.0, y: 5.0, z: 6.0 }
+
+  let sum3 = vec3Add(v3, v4)
+  print("v3 + v4 = ${vec3Str(sum3)}")
+
+  let dot3 = vec3Dot(v3, v4)
+  print("v3 . v4 = ${dot3}")
+
+  let scaled3 = vec3Scale(v3, 0.5)
+  print("v3 * 0.5 = ${vec3Str(scaled3)}")
+end

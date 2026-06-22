@@ -1,0 +1,56 @@
+# Records and destructuring
+
+record User do
+  name : String
+  age : Int
+  email : String?  = None
+end
+
+record Address do
+  street : String
+  city : String
+  country : String = "Hungary"
+end
+
+record Profile do
+  user : User
+  address : Address
+  tags : [String] = []
+end
+
+make User do
+  let greet({ name }) = "Hi, ${name}!"
+
+  let adult?({ age }) = age >= 18
+
+  let withEmail(email: String) -> User do
+    return User { name: this.name, age: this.age, email: Just(email) }
+  end
+end
+
+make Profile do
+  # Nested destructuring
+  let city({ address: { city } }) = city
+
+  let addTag(tag: String) -> Profile do
+    return Profile {
+      user: this.user,
+      address: this.address,
+      tags: [tag | this.tags]
+    }
+  end
+end
+
+main do
+  let user = User { name: "Alice", age: 30 }
+  let addr = Address { street: "Main St", city: "Budapest" }
+  let profile = Profile { user: user, address: addr }
+
+  let greeting = user.greet
+  let is_adult = user.adult?
+  let city = profile.city
+
+  # Destructuring
+  let { name, age } = user
+  let { address: { city: c, country } } = profile
+end

@@ -1,0 +1,197 @@
+# JSON parser — demonstrating pattern matching and Result types
+
+type Json
+  = JsonNull
+  | JsonBool(Bool)
+  | JsonNumber(Float)
+  | JsonString(String)
+  | JsonArray([Json])
+  | JsonObject({ String: Json })
+
+type ParseError = UnexpectedChar(String, Int) | UnexpectedEnd | InvalidNumber(String)
+
+record Parser do
+  input : String
+  pos : Int = 0
+end
+
+make Parser do
+  let parse(input: String) -> Result<Json, ParseError> do
+    let parser = Parser { input: input }
+    let (result, _) = parser.parseValue?
+    return Ok(result)
+  end
+
+  private do
+    let current({ input, pos }) -> String? do
+      return None if pos >= input.length
+      return Just(input.charAt(pos))
+    end
+
+    let advance({ input, pos }) -> Parser do
+      return Parser { input: input, pos: pos + 1 }
+    end
+
+    let skipWhitespace({ }) -> Parser do
+      var p = this
+      loop do
+        match p.current do
+          Just(" ") -> p = p.advance
+          Just("\n") -> p = p.advance
+          Just("\t") -> p = p.advance
+          _ -> return p
+        end
+      end
+    end
+
+    let parseValue({ }) -> Result<(Json, Parser), ParseError> do
+      let p = this.skipWhitespace
+
+      match p.current do
+        None -> Error(UnexpectedEnd)
+        Just("n") -> p.parseNull
+        Just("t") -> p.parseBool
+        Just("f") -> p.parseBool
+        Just("\"") -> p.parseString
+        Just("[") -> p.parseArray
+        Just("{") -> p.parseObject
+        Just(c) if isDigit?(c) || c == "-" -> p.parseNumber
+        Just(c) -> Error(UnexpectedChar(c, p.pos))
+      end
+    end
+
+    let parseNull({ }) -> Result<(Json, Parser), ParseError> do
+      # consume "null"
+      let p = this.advance.advance.advance.advance
+      return Ok((JsonNull, p))
+    end
+
+    let parseBool({ }) -> Result<(Json, Parser), ParseError> do
+      match this.current do
+        Just("t") -> do
+          let p = this.advance.advance.advance.advance
+          return Ok((JsonBool(true), p))
+        end
+        Just("f") -> do
+          let p = this.advance.advance.advance.advance.advance
+          return Ok((JsonBool(false), p))
+        end
+        _ -> Error(UnexpectedChar("", this.pos))
+      end
+    end
+
+    let parseString({ }) -> Result<(Json, Parser), ParseError> do
+      var p = this.advance   # skip opening quote
+      var chars: [String] = []
+
+      loop do
+        match p.current do
+          None -> return Error(UnexpectedEnd)
+          Just("\"") -> return Ok((JsonString(chars.join("")), p.advance))
+          Just("\\") -> do
+            p = p.advance
+            match p.current do
+              Just("n") -> chars.push!("\n")
+              Just("t") -> chars.push!("\t")
+              Just(c) -> chars.push!(c)
+              None -> return Error(UnexpectedEnd)
+            end
+            p = p.advance
+          end
+          Just(c) -> do
+            chars.push!(c)
+            p = p.advance
+          end
+        end
+      end
+    end
+
+    let parseArray({ }) -> Result<(Json, Parser), ParseError> do
+      var p = this.advance.skipWhitespace   # skip [
+      var items: [Json] = []
+
+      if p.current == Just("]") do
+        return Ok((JsonArray([]), p.advance))
+      end
+
+      loop do
+        let (value, nextP) = p.parseValue?
+        items.push!(value)
+        p = nextP.skipWhitespace
+
+        match p.current do
+          Just(",") -> p = p.advance.skipWhitespace
+          Just("]") -> return Ok((JsonArray(items), p.advance))
+          _ -> return Error(UnexpectedChar("expected , or ]", p.pos))
+        end
+      end
+    end
+
+    let parseObject({ }) -> Result<(Json, Parser), ParseError> do
+      var p = this.advance.skipWhitespace   # skip {
+      var obj: { String: Json } = {}
+
+      if p.current == Just("}") do
+        return Ok((JsonObject({}), p.advance))
+      end
+
+      loop do
+        let (JsonString(key), afterKey) = p.parseString?
+        p = afterKey.skipWhitespace
+
+        # expect colon
+        p = p.advance.skipWhitespace
+
+        let (value, afterValue) = p.parseValue?
+        obj.put!(key, value)
+        p = afterValue.skipWhitespace
+
+        match p.current do
+          Just(",") -> p = p.advance.skipWhitespace
+          Just("}") -> return Ok((JsonObject(obj), p.advance))
+          _ -> return Error(UnexpectedChar("expected , or }", p.pos))
+        end
+      end
+    end
+
+    let parseNumber({ }) -> Result<(Json, Parser), ParseError> do
+      var p = this
+      var chars: [String] = []
+
+      if p.current == Just("-") do
+        chars.push!("-")
+        p = p.advance
+      end
+
+      loop do
+        match p.current do
+          Just(c) if isDigit?(c) || c == "." -> do
+            chars.push!(c)
+            p = p.advance
+          end
+          _ -> do
+            let numStr = chars.join("")
+            match Float.parse(numStr) do
+              Ok(n) -> return Ok((JsonNumber(n), p))
+              Error(_) -> return Error(InvalidNumber(numStr))
+            end
+          end
+        end
+      end
+    end
+
+    let isDigit?(c: String) -> Bool do
+      return c >= "0" && c <= "9"
+    end
+  end
+end
+
+# Usage
+main do
+  let input = "{\"name\": \"Alice\", \"age\": 30, \"hobbies\": [\"coding\", \"music\"]}"
+
+  match Parser.parse(input) do
+    Ok(json) -> print("Parsed: ${json}")
+    Error(e) -> print("Error: ${e}")
+  end
+end

@@ -1,0 +1,27 @@
+# Variables, mutation, and interpolation
+# Expected output:
+# 8
+# 3
+# Hello, World!
+# count = 3
+# [1, 2, 3, 4, 5]
+
+main do
+  let x = 5 + 3
+  print(x)
+
+  var count = 0
+  count = count + 1
+  count = count + 1
+  count = count + 1
+  print(count)
+
+  let name = "World"
+  print("Hello, ${name}!")
+  print("count = ${count}")
+
+  var list = [1, 2, 3]
+  list = list.push(4)
+  list = list.push(5)
+  print(list)
+end

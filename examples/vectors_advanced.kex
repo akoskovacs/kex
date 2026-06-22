@@ -1,0 +1,207 @@
+# Vectors with static constructors, polar coordinates, and UFCS methods
+
+# --- Math constants and helpers ---
+
+let pi = 3.14159265358979
+
+let sqrt(x: Float) -> Float do
+  var guess = x / 2.0
+  guess = (guess + x / guess) / 2.0
+  guess = (guess + x / guess) / 2.0
+  guess = (guess + x / guess) / 2.0
+  guess = (guess + x / guess) / 2.0
+  guess = (guess + x / guess) / 2.0
+  guess = (guess + x / guess) / 2.0
+  guess = (guess + x / guess) / 2.0
+  guess = (guess + x / guess) / 2.0
+  guess = (guess + x / guess) / 2.0
+  guess = (guess + x / guess) / 2.0
+  return guess
+end
+
+let sin(x: Float) -> Float do
+  let x2 = x * x
+  let x3 = x2 * x
+  let x5 = x2 * x3
+  let x7 = x2 * x5
+  return x - x3 / 6.0 + x5 / 120.0 - x7 / 5040.0
+end
+
+let cos(x: Float) -> Float do
+  let x2 = x * x
+  let x4 = x2 * x2
+  let x6 = x4 * x2
+  return 1.0 - x2 / 2.0 + x4 / 24.0 - x6 / 720.0
+end
+
+# --- Vector2D with static constructors ---
+
+record Vector2D do
+  x : Float
+  y : Float
+
+  static do
+    # Constructors (capitalized — creates instances)
+    let Polar(length: Float, angle: Float) -> Vector2D do
+      return Vector2D { x: length * cos(angle), y: length * sin(angle) }
+    end
+
+    let Angle(angle: Float) -> Vector2D do
+      return Vector2D { x: cos(angle), y: sin(angle) }
+    end
+
+    # Constants (capitalized — type-level values)
+    let Zero = Vector2D { x: 0.0, y: 0.0 }
+    let UnitX = Vector2D { x: 1.0, y: 0.0 }
+    let UnitY = Vector2D { x: 0.0, y: 1.0 }
+    let One = Vector2D { x: 1.0, y: 1.0 }
+  end
+end
+
+record Vector3D do
+  x : Float
+  y : Float
+  z : Float
+
+  static do
+    # Constructors
+    let Spherical(radius: Float, theta: Float, phi: Float) -> Vector3D do
+      return Vector3D {
+        x: radius * sin(theta) * cos(phi),
+        y: radius * sin(theta) * sin(phi),
+        z: radius * cos(theta)
+      }
+    end
+
+    # Constants
+    let Zero = Vector3D { x: 0.0, y: 0.0, z: 0.0 }
+    let UnitX = Vector3D { x: 1.0, y: 0.0, z: 0.0 }
+    let UnitY = Vector3D { x: 0.0, y: 1.0, z: 0.0 }
+    let UnitZ = Vector3D { x: 0.0, y: 0.0, z: 1.0 }
+  end
+end
+
+# --- Instance methods via make ---
+
+make Vector2D do
+  let add(other: Vector2D) -> Vector2D do
+    return Vector2D { x: this.x + other.x, y: this.y + other.y }
+  end
+
+  let scale(factor: Float) -> Vector2D do
+    return Vector2D { x: this.x * factor, y: this.y * factor }
+  end
+
+  let dot(other: Vector2D) -> Float do
+    return this.x * other.x + this.y * other.y
+  end
+
+  let length -> Float do
+    return sqrt(this.x * this.x + this.y * this.y)
+  end
+
+  let normalize -> Vector2D do
+    let len = sqrt(this.x * this.x + this.y * this.y)
+    return Vector2D { x: this.x / len, y: this.y / len }
+  end
+
+  let rotate(angle: Float) -> Vector2D do
+    let c = cos(angle)
+    let s = sin(angle)
+    return Vector2D { x: this.x * c - this.y * s, y: this.x * s + this.y * c }
+  end
+
+  let lerp(other: Vector2D, t: Float) -> Vector2D do
+    return Vector2D {
+      x: this.x + (other.x - this.x) * t,
+      y: this.y + (other.y - this.y) * t
+    }
+  end
+
+  # Universal conversion — value.to(TargetType)
+  let to(String) -> String do
+    return "(${this.x}, ${this.y})"
+  end
+end
+
+# --- Demo ---
+
+main do
+  print("=== Static Constructors ===")
+  print("")
+
+  # Direct construction
+  let a = Vector2D { x: 3.0, y: 4.0 }
+  print("Direct:              ${a.to(String)}")
+
+  # Static constructors — Polar(length, angle)
+  let polar = Polar(5.0, pi / 4.0)
+  print("Polar(5, pi/4): ${polar.to(String)}")
+
+  let unit30 = Angle(pi / 6.0)
+  print("Angle(pi/6):  ${unit30.to(String)}")
+
+  let unit45 = Angle(pi / 4.0)
+  print("Angle(pi/4):  ${unit45.to(String)}")
+
+  let unit90 = Angle(pi / 2.0)
+  print("Angle(pi/2):  ${unit90.to(String)}")
+
+  # Constants — Zero, UnitX, etc.
+  print("")
+  print("Zero:  ${Zero.to(String)}")
+  print("UnitX: ${UnitX.to(String)}")
+  print("UnitY: ${UnitY.to(String)}")
+  print("One:   ${One.to(String)}")
+
+  print("")
+  print("=== Instance Methods (lowercase) ===")
+  print("")
+
+  let p = Vector2D { x: 3.0, y: 4.0 }
+  let q = Vector2D { x: 1.0, y: 2.0 }
+
+  print("p = ${p.to(String)}")
+  print("q = ${q.to(String)}")
+  print("p.add(q) = ${p.add(q).to(String)}")
+  print("p.scale(2) = ${p.scale(2.0).to(String)}")
+  print("p.dot(q) = ${p.dot(q)}")
+  print("p.length = ${p.length}")
+  print("p.normalize = ${p.normalize.to(String)}")
+
+  print("")
+  print("=== Polar to Cartesian ===")
+  print("")
+
+  # Create vectors at regular angles around a circle
+  let r = 3.0
+  let v0 = Polar(r, 0.0)
+  let v60 = Polar(r, pi / 3.0)
+  let v120 = Polar(r, 2.0 * pi / 3.0)
+  let v180 = Polar(r, pi)
+
+  print("r=3, angle=0:     ${v0.to(String)}")
+  print("r=3, angle=60:    ${v60.to(String)}")
+  print("r=3, angle=120:   ${v120.to(String)}")
+  print("r=3, angle=180:   ${v180.to(String)}")
+
+  print("")
+  print("=== Rotation ===")
+  print("")
+
+  let right = UnitX
+  print("UnitX rotated 45 deg: ${right.rotate(pi / 4.0).to(String)}")
+  print("UnitX rotated 90 deg: ${right.rotate(pi / 2.0).to(String)}")
+
+  print("")
+  print("=== Interpolation ===")
+  print("")
+
+  let start = Zero
+  let finish = Vector2D { x: 10.0, y: 5.0 }
+  print("lerp(0.0) = ${start.lerp(finish, 0.0).to(String)}")
+  print("lerp(0.25) = ${start.lerp(finish, 0.25).to(String)}")
+  print("lerp(0.5) = ${start.lerp(finish, 0.5).to(String)}")
+  print("lerp(0.75) = ${start.lerp(finish, 0.75).to(String)}")
+  print("lerp(1.0) = ${start.lerp(finish, 1.0).to(String)}")
+end

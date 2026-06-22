@@ -1,0 +1,36 @@
+# Basic types and functions
+
+let identity(a: A) = a
+
+let double(n: Int) = n * 2
+
+let greet(name: String) -> String do
+  return "Hello, ${name}!"
+end
+
+# Pattern matching with multiple clauses
+let factorial(0) = 1
+let factorial(n: Int) = n * factorial(n - 1)
+
+# Local var
+let sum(list: [Int]) -> Int do
+  var total = 0
+  list.each do |n|
+    total = total + n
+  end
+  return total
+end
+
+# Tuples
+let divmod(a: Int, b: Int) -> (Int, Int) do
+  return (a / b, a.modulo(b))
+end
+
+main do
+  let name = "World"
+  let result = greet(name)
+  let (q, r) = divmod(10, 3)
+  let nums = [1, 2, 3, 4, 5]
+  let total = nums.sum
+  let doubled = nums.map { |x| x * 2 }
+end

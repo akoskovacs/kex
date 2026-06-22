@@ -1,0 +1,97 @@
+# Pattern matching examples
+
+type Shape
+  = Circle(Float)
+  | Rectangle(Float, Float)
+  | Triangle(Float, Float, Float)
+
+let area(shape: Shape) -> Float do
+  match shape do
+    Circle(r) -> 3.14159 * r * r
+    Rectangle(w, h) -> w * h
+    Triangle(a, b, c) -> do
+      let s = (a + b + c) / 2.0
+      (s * (s - a) * (s - b) * (s - c)).sqrt
+    end
+  end
+end
+
+# Pattern matching with @  (match on this)
+make [A] do
+  let isEmpty?(@[]) = true
+  let isEmpty?(@_) = false
+
+  let head(@[]) = None
+  let head(@[x | _]) = Just(x)
+
+  let tail(@[]) = None
+  let tail(@[_ | rest]) = Just(rest)
+
+  let zip(@[], _) = []
+  let zip(@_, []) = []
+  let zip(@[x | xs], [y | ys]) = [(x, y) | xs.zip(ys)]
+end
+
+# Record destructuring in function heads
+record Point do
+  x : Float
+  y : Float
+end
+
+make Point do
+  let distance({ x: x1, y: y1 }, other: Point) -> Float do
+    let { x: x2, y: y2 } = other
+    return ((x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1)).sqrt
+  end
+
+  let origin?({ x: 0.0, y: 0.0 }) = true
+  let origin?({ }) = false
+
+  let quadrant({ x, y }) do
+    match (x > 0.0, y > 0.0) do
+      (true, true) -> 1
+      (false, true) -> 2
+      (false, false) -> 3
+      (true, false) -> 4
+    end
+  end
+end
+
+# Nested destructuring
+record Line do
+  start : Point
+  end : Point
+end
+
+make Line do
+  let horizontal?({ start: { y: y1 }, end: { y: y2 } }) = y1 == y2
+  let vertical?({ start: { x: x1 }, end: { x: x2 } }) = x1 == x2
+end
+
+# Guards in match (trailing if)
+let classify(n: Int) -> String do
+  match n do
+    0 -> "zero"
+    n if n > 0 -> "positive"
+    _ -> "negative"
+  end
+end
+
+# List pattern matching
+let describe(list: [Int]) -> String do
+  match list do
+    [] -> "empty"
+    [x] -> "single: ${x}"
+    [x, y] -> "pair: ${x}, ${y}"
+    [x | _] -> "starts with ${x}"
+  end
+end
+
+# Tuple patterns in receive
+foul let handleMessage do
+  receive do
+    (:ok, value) -> process(value)
+    (:error, reason) -> log("Failed: ${reason}")
+    (:timeout) -> retry()
+  end
+end

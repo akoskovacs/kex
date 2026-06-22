@@ -1,0 +1,37 @@
+# Collections and higher-order functions
+# Expected output:
+# [2, 4, 6, 8, 10]
+# [2, 4]
+# 15
+# 5
+# 1
+# [1, 2, 3, 4, 5, 6]
+# [1, 2, 3, 4, 5]
+# hello, world, kex
+# true
+# true
+# false
+# olleh
+# HI
+# hi
+
+let even?(n: Int) = n.modulo(2) == 0
+
+main do
+  let nums = [1, 2, 3, 4, 5]
+
+  print(nums.map { |x| x * 2 })
+  print(nums.filter(&even?))
+  print(nums.reduce(0) { |acc, x| acc + x })
+  print(nums.length)
+  print(nums.first)
+  print(nums.push(6))
+  print(nums.sort)
+  print(["hello", "world", "kex"].join(", "))
+  print(nums.any? { |x| x > 4 })
+  print(nums.all? { |x| x > 0 })
+  print(nums.all? { |x| x > 3 })
+  print("hello".reverse)
+  print("hi".upcase)
+  print("HI".downcase)
+end
