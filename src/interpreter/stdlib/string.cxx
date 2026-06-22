@@ -10,6 +10,17 @@ auto Evaluator::registerStringBuiltins() -> void {
         m_globalEnv->define(name, val);
     };
 
+    reg("at", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.size() < 2) return Value::string("");
+        auto* str = std::get_if<StringValue>(&args[0]->data);
+        auto* idx = std::get_if<IntValue>(&args[1]->data);
+        if (!str || !idx) return Value::string("");
+        if (idx->value < 0 || static_cast<size_t>(idx->value) >= str->value.size()) {
+            return Value::string("");
+        }
+        return Value::string(std::string(1, str->value[static_cast<size_t>(idx->value)]));
+    });
+
     reg("contains?", [](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.size() < 2) return Value::boolean(false);
         auto* str = std::get_if<StringValue>(&args[0]->data);

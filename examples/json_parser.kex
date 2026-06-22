@@ -18,21 +18,21 @@ end
 make Parser do
   let parse(input: String) -> Result<Json, ParseError> do
     let parser = Parser { input: input }
-    let (result, _) = parser.parseValue?
+    let (result, _) = parser.parseValue()?
     return Ok(result)
   end
 
   private do
     let current({ input, pos }) -> String? do
       return None if pos >= input.length
-      return Just(input.charAt(pos))
+      return Just(input.at(pos))
     end
 
     let advance({ input, pos }) -> Parser do
       return Parser { input: input, pos: pos + 1 }
     end
 
-    let skipWhitespace({ }) -> Parser do
+    let skipWhitespace() -> Parser do
       var p = this
       loop do
         match p.current do
@@ -44,7 +44,7 @@ make Parser do
       end
     end
 
-    let parseValue({ }) -> Result<(Json, Parser), ParseError> do
+    let parseValue() -> Result<(Json, Parser), ParseError> do
       let p = this.skipWhitespace
 
       match p.current do
@@ -60,13 +60,13 @@ make Parser do
       end
     end
 
-    let parseNull({ }) -> Result<(Json, Parser), ParseError> do
+    let parseNull() -> Result<(Json, Parser), ParseError> do
       # consume "null"
       let p = this.advance.advance.advance.advance
       return Ok((JsonNull, p))
     end
 
-    let parseBool({ }) -> Result<(Json, Parser), ParseError> do
+    let parseBool() -> Result<(Json, Parser), ParseError> do
       match this.current do
         Just("t") -> do
           let p = this.advance.advance.advance.advance
@@ -80,7 +80,7 @@ make Parser do
       end
     end
 
-    let parseString({ }) -> Result<(Json, Parser), ParseError> do
+    let parseString() -> Result<(Json, Parser), ParseError> do
       var p = this.advance   # skip opening quote
       var chars: [String] = []
 
@@ -106,7 +106,7 @@ make Parser do
       end
     end
 
-    let parseArray({ }) -> Result<(Json, Parser), ParseError> do
+    let parseArray() -> Result<(Json, Parser), ParseError> do
       var p = this.advance.skipWhitespace   # skip [
       var items: [Json] = []
 
@@ -115,7 +115,7 @@ make Parser do
       end
 
       loop do
-        let (value, nextP) = p.parseValue?
+        let (value, nextP) = p.parseValue()?
         items.push!(value)
         p = nextP.skipWhitespace
 
@@ -127,7 +127,7 @@ make Parser do
       end
     end
 
-    let parseObject({ }) -> Result<(Json, Parser), ParseError> do
+    let parseObject() -> Result<(Json, Parser), ParseError> do
       var p = this.advance.skipWhitespace   # skip {
       var obj: { String: Json } = {}
 
@@ -136,13 +136,13 @@ make Parser do
       end
 
       loop do
-        let (JsonString(key), afterKey) = p.parseString?
+        let (JsonString(key), afterKey) = p.parseString()?
         p = afterKey.skipWhitespace
 
         # expect colon
         p = p.advance.skipWhitespace
 
-        let (value, afterValue) = p.parseValue?
+        let (value, afterValue) = p.parseValue()?
         obj.put!(key, value)
         p = afterValue.skipWhitespace
 
@@ -154,7 +154,7 @@ make Parser do
       end
     end
 
-    let parseNumber({ }) -> Result<(Json, Parser), ParseError> do
+    let parseNumber() -> Result<(Json, Parser), ParseError> do
       var p = this
       var chars: [String] = []
 

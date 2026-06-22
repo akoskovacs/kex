@@ -277,6 +277,28 @@ int main() {
             );
             assertEqual(std::get<StringValue>(result->data).value, std::string("B"));
         });
+
+        it("loop runs until a return escapes it (regression)", []() {
+            // Regression test: `loop do ... end` was a parsed-but-never-
+            // evaluated no-op (silently returned None without running the
+            // body even once). It must actually run, repeatedly, until a
+            // `return` inside it throws (Kex has no break/continue).
+            auto result = run(
+                "let countTo(limit: Int) -> Int do\n"
+                "  var i = 0\n"
+                "  loop do\n"
+                "    if i >= limit do\n"
+                "      return i\n"
+                "    end\n"
+                "    i = i + 1\n"
+                "  end\n"
+                "end\n"
+                "main do\n"
+                "  countTo(5)\n"
+                "end\n"
+            );
+            assertEqual(std::get<IntValue>(result->data).value, int64_t(5));
+        });
     });
 
     describe("Interpreter — Collections", []() {
@@ -301,6 +323,20 @@ int main() {
                 "end\n"
             );
             assertEqual(std::get<IntValue>(result->data).value, int64_t(30));
+        });
+
+        it("tuple destructuring binds nested constructor patterns (regression)", []() {
+            // Regression test: `let (Tag(x), y) = ...` used to only bind
+            // bare-variable tuple elements; a ConstructorPattern element
+            // like Tag(x) was silently skipped, leaving `x` undefined.
+            auto result = run(
+                "type Wrapped = Tag(Int)\n"
+                "main do\n"
+                "  let (Tag(x), y) = (Tag(7), 3)\n"
+                "  x + y\n"
+                "end\n"
+            );
+            assertEqual(std::get<IntValue>(result->data).value, int64_t(10));
         });
 
         it("range literal", []() {
@@ -562,6 +598,70 @@ int main() {
                 "end\n"
             );
             assertTrue(std::get<AtomValue>(result->data).name == "Nothing");
+        });
+    });
+
+    describe("Interpreter — Records", []() {
+        it("applies declared field defaults on construction (regression)", []() {
+            // Regression test: `record X do f : Int = 0 end` then `X { }`
+            // used to leave `f` entirely absent from the RecordValue rather
+            // than applying the declared default, breaking anything that
+            // destructures/reads that field without setting it explicitly.
+            auto result = run(
+                "record Counter do\n"
+                "  value : Int = 0\n"
+                "end\n"
+                "main do\n"
+                "  Counter { }.value\n"
+                "end\n"
+            );
+            assertEqual(std::get<IntValue>(result->data).value, int64_t(0));
+        });
+
+        it("explicit fields override declared defaults", []() {
+            auto result = run(
+                "record Counter do\n"
+                "  value : Int = 0\n"
+                "end\n"
+                "main do\n"
+                "  Counter { value: 99 }.value\n"
+                "end\n"
+            );
+            assertEqual(std::get<IntValue>(result->data).value, int64_t(99));
+        });
+
+        it("functions defined in a private block inside make are callable (regression)", []() {
+            // Regression test: `make X do private do let f(...) = ... end end`
+            // used to silently skip the private block entirely — execMakeDef
+            // only handled bare FunctionDef items, not VisibilityBlock ones —
+            // so `f` was never registered at all.
+            auto result = run(
+                "record Box do\n"
+                "  value : Int\n"
+                "end\n"
+                "make Box do\n"
+                "  let pub(b) = b.priv\n"
+                "  private do\n"
+                "    let priv(b) = b.value * 2\n"
+                "  end\n"
+                "end\n"
+                "main do\n"
+                "  Box { value: 5 }.pub\n"
+                "end\n"
+            );
+            assertEqual(std::get<IntValue>(result->data).value, int64_t(10));
+        });
+    });
+
+    describe("Interpreter — String at", []() {
+        it("returns the character at an index", []() {
+            auto result = run("main do\n  \"hello\".at(1)\nend\n");
+            assertEqual(std::get<StringValue>(result->data).value, std::string("e"));
+        });
+
+        it("returns empty string out of range", []() {
+            auto result = run("main do\n  \"hi\".at(5)\nend\n");
+            assertEqual(std::get<StringValue>(result->data).value, std::string(""));
         });
     });
 

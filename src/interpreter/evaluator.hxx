@@ -48,6 +48,9 @@ private:
     auto execModule(const ast::ModuleDef& mod) -> void;
     auto execFunctionDef(const ast::FunctionDef& def, const std::string& typeScope = "") -> void;
     auto execMakeDef(const ast::MakeDef& def) -> void;
+    auto execTypeDef(const ast::TypeDef& def) -> void;
+    auto execRecordDef(const ast::RecordDef& def) -> void;
+    auto execVisibilityBlock(const ast::VisibilityBlock& block, const std::string& typeScope = "") -> void;
     auto execMainBlock(const ast::MainBlock& block) -> ValuePtr;
 
     // Expressions
@@ -93,6 +96,10 @@ private:
     // `make Option<A> do let map(@Just(x), f) = ... end` (registered under
     // "Option::map") when called on a `Just(...)` value (tagged "Just").
     std::unordered_map<std::string, std::string> m_variantParent;
+    // Record definitions, keyed by name, so RecordConstruction can apply
+    // declared field defaults (e.g. `pos : Int = 0`) for fields the
+    // constructor call doesn't specify explicitly.
+    std::unordered_map<std::string, const ast::RecordDef*> m_recordDefs;
     bool m_replMode = false;
 };
 

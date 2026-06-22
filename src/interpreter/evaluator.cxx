@@ -44,59 +44,9 @@ auto Evaluator::execTopLevel(const ast::TopLevelItem& item) -> void {
         } else if constexpr (std::is_same_v<T, std::unique_ptr<ast::MakeDef>>) {
             execMakeDef(*node);
         } else if constexpr (std::is_same_v<T, std::unique_ptr<ast::RecordDef>>) {
-            // Register record name as a namespace for static access (e.g. Vector2D.Polar)
-            m_env->define(node->name, Value::record(node->name, {}));
-            if (node->staticBlock) {
-                for (const auto& func : node->staticBlock->functions) {
-                    execFunctionDef(*func);
-                }
-            }
+            execRecordDef(*node);
         } else if constexpr (std::is_same_v<T, std::unique_ptr<ast::TypeDef>>) {
-            if (node->staticBlock) {
-                for (const auto& func : node->staticBlock->functions) {
-                    execFunctionDef(*func);
-                }
-            }
-            // Register sum-type variant constructors with args (Just(A),
-            // Ok(A), Error(E), Number(Int), ...) as callable functions that
-            // build a RecordValue with positional fields "0", "1", ....
-            // Zero-arg variants (Fizz, Nothing, ...) need no constructor
-            // registration — they already work as values and as patterns
-            // via the UpperIdentifier-as-Atom fallback in
-            // eval()/matchPattern(). Both kinds still need an entry in
-            // m_variantParent so `make TypeName do ... end` method dispatch
-            // can map the variant tag back to the declaring type.
-            if (node->variants) {
-                for (const auto& variant : *node->variants) {
-                    if (!variant) continue;
-                    std::string variantName;
-                    size_t arity = 0;
-                    if (auto* generic = std::get_if<ast::GenericType>(&variant->kind)) {
-                        if (generic->name.parts.empty()) continue;
-                        variantName = generic->name.parts.back();
-                        arity = generic->args.size();
-                    } else if (auto* plain = std::get_if<ast::TypeName>(&variant->kind)) {
-                        if (plain->parts.empty()) continue;
-                        variantName = plain->parts.back();
-                    } else {
-                        continue;
-                    }
-
-                    m_variantParent[variantName] = node->name;
-
-                    if (arity == 0) continue;
-                    auto val = std::make_shared<Value>();
-                    val->data = FunctionValue{variantName,
-                        [variantName, arity](std::vector<ValuePtr> args) -> ValuePtr {
-                            std::unordered_map<std::string, ValuePtr> fields;
-                            for (size_t i = 0; i < arity; i++) {
-                                fields[std::to_string(i)] = i < args.size() ? args[i] : Value::none();
-                            }
-                            return Value::record(variantName, std::move(fields));
-                        }};
-                    m_env->define(variantName, val);
-                }
-            }
+            execTypeDef(*node);
         }
     }, item);
 }
@@ -109,7 +59,97 @@ auto Evaluator::execModule(const ast::ModuleDef& mod) -> void {
                 execFunctionDef(*node);
             } else if constexpr (std::is_same_v<T, std::unique_ptr<ast::ModuleDef>>) {
                 execModule(*node);
+            } else if constexpr (std::is_same_v<T, std::unique_ptr<ast::TypeDef>>) {
+                execTypeDef(*node);
+            } else if constexpr (std::is_same_v<T, std::unique_ptr<ast::RecordDef>>) {
+                execRecordDef(*node);
+            } else if constexpr (std::is_same_v<T, std::unique_ptr<ast::MakeDef>>) {
+                execMakeDef(*node);
+            } else if constexpr (std::is_same_v<T, std::unique_ptr<ast::VisibilityBlock>>) {
+                execVisibilityBlock(*node);
             }
+            // CompiledBlock/UsingBlock: not implemented yet (separate,
+            // larger features — metaprogramming and module imports).
+        }, item);
+    }
+}
+
+auto Evaluator::execTypeDef(const ast::TypeDef& def) -> void {
+    if (def.staticBlock) {
+        for (const auto& func : def.staticBlock->functions) {
+            execFunctionDef(*func);
+        }
+    }
+    // Register sum-type variant constructors with args (Just(A), Ok(A),
+    // Error(E), Number(Int), ...) as callable functions that build a
+    // RecordValue with positional fields "0", "1", .... Zero-arg variants
+    // (Fizz, Nothing, ...) need no constructor registration — they already
+    // work as values and as patterns via the UpperIdentifier-as-Atom
+    // fallback in eval()/matchPattern(). Both kinds still need an entry in
+    // m_variantParent so `make TypeName do ... end` method dispatch can map
+    // the variant tag back to the declaring type.
+    if (def.variants) {
+        for (const auto& variant : *def.variants) {
+            if (!variant) continue;
+            std::string variantName;
+            size_t arity = 0;
+            if (auto* generic = std::get_if<ast::GenericType>(&variant->kind)) {
+                if (generic->name.parts.empty()) continue;
+                variantName = generic->name.parts.back();
+                arity = generic->args.size();
+            } else if (auto* plain = std::get_if<ast::TypeName>(&variant->kind)) {
+                if (plain->parts.empty()) continue;
+                variantName = plain->parts.back();
+            } else {
+                continue;
+            }
+
+            m_variantParent[variantName] = def.name;
+
+            if (arity == 0) continue;
+            auto val = std::make_shared<Value>();
+            val->data = FunctionValue{variantName,
+                [variantName, arity](std::vector<ValuePtr> args) -> ValuePtr {
+                    std::unordered_map<std::string, ValuePtr> fields;
+                    for (size_t i = 0; i < arity; i++) {
+                        fields[std::to_string(i)] = i < args.size() ? args[i] : Value::none();
+                    }
+                    return Value::record(variantName, std::move(fields));
+                }};
+            m_env->define(variantName, val);
+        }
+    }
+}
+
+auto Evaluator::execRecordDef(const ast::RecordDef& def) -> void {
+    // Register record name as a namespace for static access (e.g. Vector2D.Polar)
+    m_env->define(def.name, Value::record(def.name, {}));
+    m_recordDefs[def.name] = &def;
+    if (def.staticBlock) {
+        for (const auto& func : def.staticBlock->functions) {
+            execFunctionDef(*func);
+        }
+    }
+}
+
+auto Evaluator::execVisibilityBlock(const ast::VisibilityBlock& block, const std::string& typeScope) -> void {
+    // Visibility (public/private) isn't enforced anywhere yet (see
+    // semantic/analyzer.cxx's "TODO: handle visibility") — both kinds are
+    // registered identically; only their accessibility differs, which
+    // isn't checked at this stage.
+    for (const auto& item : block.items) {
+        std::visit([this, &typeScope](const auto& node) {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, std::unique_ptr<ast::FunctionDef>>) {
+                execFunctionDef(*node, typeScope);
+            } else if constexpr (std::is_same_v<T, std::unique_ptr<ast::MakeDef>>) {
+                execMakeDef(*node);
+            } else if constexpr (std::is_same_v<T, std::unique_ptr<ast::TypeDef>>) {
+                execTypeDef(*node);
+            } else if constexpr (std::is_same_v<T, std::unique_ptr<ast::RecordDef>>) {
+                execRecordDef(*node);
+            }
+            // TypeAnnotation: semantic-only, nothing to execute.
         }, item);
     }
 }
@@ -226,7 +266,12 @@ auto Evaluator::execMakeDef(const ast::MakeDef& def) -> void {
             using T = std::decay_t<decltype(node)>;
             if constexpr (std::is_same_v<T, std::unique_ptr<ast::FunctionDef>>) {
                 execFunctionDef(*node, typeName);
+            } else if constexpr (std::is_same_v<T, std::unique_ptr<ast::VisibilityBlock>>) {
+                // `private do ... end` / `public do ... end` inside a make
+                // block — methods defined there still belong to typeName.
+                execVisibilityBlock(*node, typeName);
             }
+            // TypeAnnotation: semantic-only, nothing to execute.
         }, item);
     }
 }
@@ -352,10 +397,12 @@ auto Evaluator::eval(const ast::Expr& expr) -> ValuePtr {
                 m_env->define(varPat->name, value);
             } else if (auto* tuplePat = std::get_if<ast::TuplePattern>(&node.pattern->kind)) {
                 if (auto* tupleVal = std::get_if<TupleValue>(&value->data)) {
+                    // Delegate each element to the general matchPattern() so
+                    // nested patterns (e.g. `let (JsonString(key), rest) =
+                    // ...`, a ConstructorPattern element) bind correctly —
+                    // not just bare variable names.
                     for (size_t i = 0; i < tuplePat->elements.size() && i < tupleVal->elements.size(); i++) {
-                        if (auto* vp = std::get_if<ast::VarPattern>(&tuplePat->elements[i]->kind)) {
-                            m_env->define(vp->name, tupleVal->elements[i]);
-                        }
+                        matchPattern(*tuplePat->elements[i], tupleVal->elements[i]);
                     }
                 }
             } else if (auto* recPat = std::get_if<ast::RecordPattern>(&node.pattern->kind)) {
@@ -696,6 +743,17 @@ auto Evaluator::eval(const ast::Expr& expr) -> ValuePtr {
             for (const auto& [name, val] : node.fields) {
                 fields[name] = val ? eval(*val) : Value::none();
             }
+            // Apply declared field defaults (e.g. `pos : Int = 0`) for any
+            // field this construction didn't specify explicitly.
+            auto defIt = m_recordDefs.find(node.typeName);
+            if (defIt != m_recordDefs.end()) {
+                for (const auto& field : defIt->second->fields) {
+                    if (fields.count(field.name)) continue;
+                    if (field.defaultValue && *field.defaultValue) {
+                        fields[field.name] = eval(**field.defaultValue);
+                    }
+                }
+            }
             return Value::record(node.typeName, std::move(fields));
         }
         else if constexpr (std::is_same_v<T, ast::ShorthandLambda>) {
@@ -737,6 +795,24 @@ auto Evaluator::eval(const ast::Expr& expr) -> ValuePtr {
         }
         else if constexpr (std::is_same_v<T, ast::BlockExpr>) {
             return evalBody(node.body);
+        }
+        else if constexpr (std::is_same_v<T, ast::LoopExpr>) {
+            // `loop do ... end` runs forever — Kex has no break/continue,
+            // so the only way out is `return` (ReturnException, which
+            // unwinds to the enclosing function's call site and is caught
+            // there) or an uncaught error. Each iteration gets its own
+            // scope so `var`s declared inside the loop body don't leak
+            // across iterations (mirrors how other block bodies push/pop).
+            while (true) {
+                pushEnv();
+                try {
+                    evalBody(node.body);
+                } catch (...) {
+                    popEnv();
+                    throw;
+                }
+                popEnv();
+            }
         }
         else if constexpr (std::is_same_v<T, ast::UpperIdentifier>) {
             // Look up in environment first (records, namespaces)
