@@ -1,0 +1,12 @@
+# `.or(default)` — fallback extraction shared by Result (Ok/Error) and
+# Optional (Just/None): unwraps the success value, or returns the given
+# default when there isn't one.
+main do
+  IO.printLine(Ok(5).or(0))
+  IO.printLine(Error("bad").or(0))
+  IO.printLine(Just(5).or(0))
+  IO.printLine(None.or(0))
+
+  IO.printLine(Integer.parse("42").or(-1))
+  IO.printLine(Integer.parse("not a number").or(-1))
+end

@@ -7,7 +7,7 @@ make [X] do
   # We can pattern match on this via @. This means match on
   # the empty list itself:
   let head(@[]) = None
-  let head(@[_|xs]) = Just(x)
+  let head(@[x|_]) = Just(x)
 
   tail : This -> This
   let tail(@[]) = []
@@ -15,15 +15,22 @@ make [X] do
 
   tail : This -> Integer
   let count(@[]) = 0
-  let count(@[x|xs]) = 1 + xs.count
+  let count(@[_|xs]) = 1 + xs.count
 end
 
-main do
-  let r = 1..10
-  let list = r.to(List)
+minMaxOf : [String] -> (Integer, Integer)
+let minMaxOf([first | second | _]) = (Integer.parse(first).or(1), Integer.parse(second).or(10))
+let minMaxOf(_) = (1, 10)
+
+main(args) do
+  let (min, max) = minMaxOf(args)
+  let list = (min..max).to(List)
 
   IO.printLine("list = ${list}")
-  IO.printLine("head = ${list.head}")
+  match list.head do
+    Just(x) -> IO.printLine("head = ${x}")
+    None -> IO.printLine("No elems")
+  end
   IO.printLine("tail = ${list.tail}")
   IO.printLine("count = ${list.count}")
 end

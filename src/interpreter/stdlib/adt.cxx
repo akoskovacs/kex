@@ -62,6 +62,33 @@ auto Evaluator::registerAdtConstructors() -> void {
     };
     regOptionPredicate("some?", true);
     regOptionPredicate("none?", false);
+
+    // `or` — fallback extraction, shared by both prelude ADTs: unwraps
+    // Ok(x)/Just(x) to x, or returns the given default for Error(_)/None.
+    // Works on either family (unlike ok?/error?/some?/none?, which are
+    // deliberately family-specific) since "give me the value or a
+    // default" doesn't need to distinguish why there's no value.
+    {
+        auto val = std::make_shared<Value>();
+        val->data = FunctionValue{"or", [](std::vector<ValuePtr> args) -> ValuePtr {
+            if (args.size() < 2) {
+                throw std::runtime_error("or expects a receiver and a default value");
+            }
+            const auto& receiver = args[0];
+            const auto& fallback = args[1];
+            if (std::holds_alternative<NoneValue>(receiver->data)) return fallback;
+            if (auto* rec = std::get_if<RecordValue>(&receiver->data)) {
+                if (rec->typeName == "Ok" || rec->typeName == "Just") {
+                    auto it = rec->fields.find("0");
+                    return it != rec->fields.end() ? it->second : Value::none();
+                }
+                if (rec->typeName == "Error") return fallback;
+            }
+            throw std::runtime_error(
+                "or expects a Result (Ok/Error) or Optional (Just/None), got " + receiver->typeName());
+        }};
+        m_globalEnv->define("or", val);
+    }
 }
 
 } // namespace kex::interpreter
