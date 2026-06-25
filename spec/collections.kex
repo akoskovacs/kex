@@ -23,7 +23,7 @@ main do
   IO.printLine(nums.map { |x| x * 2 })
   IO.printLine(nums.filter(&even?))
   IO.printLine(nums.reduce(0) { |acc, x| acc + x })
-  IO.printLine(nums.length)
+  IO.printLine(nums.count)
   IO.printLine(nums.first)
   IO.printLine(nums.push(6))
   IO.printLine(nums.sort)
@@ -32,6 +32,6 @@ main do
   IO.printLine(nums.all? { |x| x > 0 })
   IO.printLine(nums.all? { |x| x > 3 })
   IO.printLine("hello".reverse)
-  IO.printLine("hi".upcase)
-  IO.printLine("HI".downcase)
+  IO.printLine("hi".upperCase)
+  IO.printLine("HI".lowerCase)
 end

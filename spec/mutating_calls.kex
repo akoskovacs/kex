@@ -13,7 +13,7 @@ main do
   IO.printLine(y)
 
   var name = "hello"
-  name.upcase!
+  name.upperCase!
   IO.printLine(name)
 
   let frozen = [1, 2, 3]

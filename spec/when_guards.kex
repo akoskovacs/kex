@@ -11,7 +11,7 @@ let complex(n) = match n do
 end
 
 let withCall(s) = match s do
-  s when s.length > 0 -> "non-empty"
+  s when s.count > 0 -> "non-empty"
   _ -> "empty"
 end
 

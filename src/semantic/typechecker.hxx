@@ -5,6 +5,7 @@
 #include "symbol.hxx"
 #include "traits.hxx"
 #include "types.hxx"
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -41,6 +42,14 @@ private:
     // contract rather than competing with body inference.
     auto registerDeclaredSignatures(const ast::Program& program) -> void;
     auto annotationToSignature(const ast::TypeAnnotation& ann) -> std::optional<Signature>;
+
+    // Pre-register provisional signatures (param types from inline annotations,
+    // TypeVar result) for all non-annotation-declared FunctionDefs before any
+    // body is checked. This makes recursive and forward-reference calls
+    // checkable: a call to `fact` inside `fact`'s own body, or a call to `b`
+    // defined after `a`, finds a signature in m_userSignatures.
+    auto preRegisterFunctionSigs(const ast::Program& program) -> void;
+    auto preRegisterFunctionDef(const ast::FunctionDef& def) -> void;
     auto checkMatchExhaustiveness(const ast::MatchExpr& node, SourceLocation loc) -> void;
 
     // Defines every variable a pattern introduces (VarPattern, shorthand
@@ -103,6 +112,13 @@ private:
 
     // Type alias map — populated before function bodies are checked.
     std::unordered_map<std::string, TypePtr> m_typeAliases;
+
+    // Functions whose signatures came from a standalone TypeAnnotation
+    // (`fact : Integer -> Integer`) — these are "declared" and checkFunctionDef
+    // uses them to validate the body.  Pre-registered provisional sigs (for
+    // forward-reference/recursion support) are NOT in this set, so they
+    // don't accidentally gate body param-type overrides.
+    std::set<std::string> m_annotationDeclared;
 
     // Per-clause signatures for top-level/module-level user functions,
     // built as each FunctionDef is checked — so a call to a function

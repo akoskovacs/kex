@@ -16,7 +16,7 @@ let value = thunk()
 # Shorthand lambdas
 let names = users.map(&.name)
 let adults = users.filter(&.adult?)
-let lengths = words.map(&.length)
+let lengths = words.map(&.count)
 let withGreeting = names.map(&.+ " hello")
 
 # &function — passing named function as closure

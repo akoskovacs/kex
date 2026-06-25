@@ -1,0 +1,29 @@
+type Optional<X> = Just<X> | None
+
+type Result<X, E> = Ok<X> | Error<E>
+
+trait Okayable<X> do 
+  ok? :> Bool
+
+  or :> X -> X
+end
+
+make Optional<X>, implement: Okayable<X> do
+  ok? :> Bool
+  let ok?(@Just(_)) = true
+  let ok?(@None) = false
+
+  or :> X -> X
+  let or(@Just(x), _) = x
+  let or(@None, default) = default
+end
+
+make Result<X, E>, implement: Okayable<X> do
+  ok? :> Bool
+  let ok?(@Ok(_)) = true
+  let ok?(@Error(_)) = false
+
+  or :> X -> X
+  let or(@Ok(x), _) = x
+  let or(@Error(_), default) = default
+end

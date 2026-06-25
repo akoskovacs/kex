@@ -1,5 +1,9 @@
 # Kex
 
+<p align="center">
+<img src="./docs/assets/logo.png" height="340" style="align: center" />
+</p>
+
 Kex is a small functional programming language with Ruby-like syntax, immutable data by default, UFCS method chains, type-directed `make` blocks, pattern matching, and explicit side-effect boundaries.
 
 It is designed for code that reads like a scripting language without giving up typed records, sum types, pure functions, and predictable dispatch.

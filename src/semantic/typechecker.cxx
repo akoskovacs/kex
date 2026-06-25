@@ -75,6 +75,7 @@ auto TypeChecker::check(const ast::Program& program,
     // name (TraitRegistry, phase 3), satisfied by Float32 and Float64.
 
     registerDeclaredSignatures(program);
+    preRegisterFunctionSigs(program);
 
     for (const auto& item : program.items) {
         checkTopLevel(item);
@@ -192,6 +193,7 @@ auto TypeChecker::registerDeclaredSignatures(const ast::Program& program) -> voi
             if (!sig) continue;
             // Declared annotation wins — stored first so checkFunctionDef
             // can find it and verify the body against the declared type.
+            m_annotationDeclared.insert((*ann)->name);
             auto& sigs = m_userSignatures[(*ann)->name];
             // Insert declared sig at front, replacing any same-arity inferred
             // one that was somehow already there (shouldn't happen in pre-pass
@@ -199,6 +201,52 @@ auto TypeChecker::registerDeclaredSignatures(const ast::Program& program) -> voi
             sigs.insert(sigs.begin(), std::move(*sig));
         }
     }
+}
+
+auto TypeChecker::preRegisterFunctionSigs(const ast::Program& program) -> void {
+    for (const auto& item : program.items) {
+        std::visit([this](const auto& node) {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, std::unique_ptr<ast::FunctionDef>>) {
+                if (node) preRegisterFunctionDef(*node);
+            } else if constexpr (std::is_same_v<T, std::unique_ptr<ast::ModuleDef>>) {
+                if (!node) return;
+                for (const auto& modItem : node->body) {
+                    std::visit([this](const auto& mn) {
+                        using MT = std::decay_t<decltype(mn)>;
+                        if constexpr (std::is_same_v<MT, std::unique_ptr<ast::FunctionDef>>) {
+                            if (mn) preRegisterFunctionDef(*mn);
+                        }
+                    }, modItem);
+                }
+            }
+        }, item);
+    }
+}
+
+auto TypeChecker::preRegisterFunctionDef(const ast::FunctionDef& def) -> void {
+    // Skip make-block methods (they have an implicit `this` that mis-counts
+    // arity in checkCall's UFCS desugaring, same exclusion as checkFunctionDef).
+    if (m_inMakeBlock) return;
+    // Skip annotation-declared functions — registerDeclaredSignatures already
+    // populated m_userSignatures for these and checkFunctionDef will use the
+    // annotation as ground truth.
+    if (m_annotationDeclared.count(def.name)) return;
+    // Skip if already pre-registered (e.g. multi-clause function — all clauses
+    // share the same def.name and the first call handles them all).
+    if (m_userSignatures.count(def.name)) return;
+
+    std::vector<Signature> provisional;
+    for (const auto& clause : def.clauses) {
+        std::unordered_map<std::string, TypePtr> genericVars;
+        std::vector<TypePtr> paramTypes;
+        for (const auto& param : clause.params) {
+            paramTypes.push_back(
+                param.type ? resolveTypeExpr(**param.type, genericVars) : freshTypeVar());
+        }
+        provisional.push_back(Signature{def.name, std::move(paramTypes), freshTypeVar()});
+    }
+    m_userSignatures[def.name] = std::move(provisional);
 }
 
 auto TypeChecker::checkMatchExhaustiveness(const ast::MatchExpr& node, SourceLocation loc) -> void {
@@ -406,10 +454,13 @@ auto TypeChecker::checkModule(const ast::ModuleDef& mod) -> void {
 }
 
 auto TypeChecker::checkFunctionDef(const ast::FunctionDef& def) -> void {
-    // If a standalone type annotation declared this function's signature,
-    // use the declared param types and result as ground truth for the
-    // clause body check; otherwise infer freely.
+    // A "declared" signature is one from a standalone TypeAnnotation
+    // (`fact : Integer -> Integer`) — tracked in m_annotationDeclared.
+    // Pre-registered provisional sigs (for forward-reference/recursion) are
+    // in m_userSignatures but NOT in m_annotationDeclared, so they don't
+    // affect param-type selection or return-type verification here.
     auto* declared = [&]() -> const Signature* {
+        if (!m_annotationDeclared.count(def.name)) return nullptr;
         auto it = m_userSignatures.find(def.name);
         if (it != m_userSignatures.end() && !it->second.empty()) return &it->second[0];
         return nullptr;

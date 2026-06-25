@@ -24,7 +24,7 @@ make Parser do
 
   private do
     let current({ input, pos }) -> Char? do
-      return None if pos >= input.length
+      return None if pos >= input.count
       return Just(input.at(pos))
     end
 
@@ -60,7 +60,7 @@ make Parser do
       end
     end
 
-    # Checks that the next `word.length` characters are exactly `word`
+    # Checks that the next `word.count` characters are exactly `word`
     # (e.g. "null", "true", "false") and returns the parser positioned
     # just past it — without this, `parseNull`/`parseBool` would accept
     # any input starting with 'n'/'t'/'f' (e.g. "nul" or "txyz") as a
@@ -69,7 +69,7 @@ make Parser do
       var p = this
       var i = 0
       loop
-        if i >= word.length
+        if i >= word.count
           return Ok(p)
         end
         if p.current == Just(word.at(i))

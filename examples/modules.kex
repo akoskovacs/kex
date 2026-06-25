@@ -30,7 +30,7 @@ module Auth do
     end
 
     let validateLength(password: String) -> Bool do
-      return password.length >= 8
+      return password.count >= 8
     end
   end
 

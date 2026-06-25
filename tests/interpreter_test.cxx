@@ -1173,7 +1173,7 @@ int main() {
             auto result = run(
                 "let items = [1, 2, 3]\n"
                 "main do\n"
-                "  items.size\n"
+                "  items.count\n"
                 "end\n"
             );
             assertEqual(std::get<IntValue>(result->data).value, int64_t(3));

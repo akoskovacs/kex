@@ -1,0 +1,63 @@
+
+type List<X> = [X]
+
+make [X] do
+  first :> X?
+  let first(@[]) = None
+  let first(@[x|_]) = Just(x)
+
+  rest :> [X]
+  let rest(@[]) = []
+  let rest(@[_|xs]) = xs
+
+  length :> Integer
+  let length(@[]) = 0
+  let length(@[_|xs]) = 1 + xs.length
+
+  find :> X -> X?
+  let find(@[], _) = None
+  let find(@[x|xs], y) do
+    return Just(x) if x == y
+
+    return xs.find(y)
+  end
+
+  # any? : Bool
+  # let any?(@[]) = false
+  # let any?(@[_|_]) = true
+end
+
+make [Number] do
+  sum :> Number
+  let sum(@[]) = 0
+  let sum(@[x|xs]) = x + xs.sum
+
+  product :> Number
+  let product(@[]) = 1
+  let product(@[x|xs]) = x * xs.product
+
+  # min : Number?
+  # let min(@[]) = None
+  # let min(@[x|xs]) do
+  #   return match xs.min do
+  #     None -> Just(x)
+  #     Just(y) -> Just(x < y then x else y)
+  #   end
+  # end
+
+  # max : Number?
+  # let max(@[]) = None
+  # let max(@[x|xs]) do
+  #   return match xs.max do
+  #     None -> Just(x)
+  #     Just(y) -> Just(x > y then x else y)
+  #   end
+  # end
+end
+
+make [String | Char] do
+  join :> This -> String
+  let join(@[]) = ""
+  let join(@[x]) = x
+  let join(@[x|xs]) = x + sep + xs.join(sep)
+end

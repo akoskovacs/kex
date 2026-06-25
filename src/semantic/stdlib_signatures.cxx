@@ -68,11 +68,53 @@ auto SignatureTable::withStdlib() -> SignatureTable {
     sig("Math::hypot", {numberLike(), numberLike()}, Type::float64());
     sig("Math::atan2", {numberLike(), numberLike()}, Type::float64());
 
+    // src/interpreter/stdlib/list.cxx
+    sig("first", {Type::list(genA())}, Type::optional(genA()));
+    sig("last",  {Type::list(genA())}, Type::optional(genA()));
+    sig("rest",  {Type::list(genA())}, Type::list(genA()));
+    sig("take",  {Type::list(genA()), Type::integer()}, Type::list(genA()));
+    sig("drop",  {Type::list(genA()), Type::integer()}, Type::list(genA()));
+    sig("push",  {Type::list(genA()), genA()}, Type::list(genA()));
+    sig("map",   {Type::list(genA()), Type::func({genA()}, genE())}, Type::list(genE()));
+    sig("filter",{Type::list(genA()), Type::func({genA()}, Type::boolean())}, Type::list(genA()));
+    sig("reject",{Type::list(genA()), Type::func({genA()}, Type::boolean())}, Type::list(genA()));
+    sig("each",  {Type::list(genA()), Type::func({genA()}, Type::unit())}, Type::unit());
+    sig("reduce",{Type::list(genA()), genE(), Type::func({genE(), genA()}, genE())}, genE());
+    sig("any?",  {Type::list(genA()), Type::func({genA()}, Type::boolean())}, Type::boolean());
+    sig("all?",  {Type::list(genA()), Type::func({genA()}, Type::boolean())}, Type::boolean());
+    sig("count", {Type::list(genA())}, Type::integer());
+    sig("count", {Type::string()},     Type::integer());
+    sig("count", {Type::map(genA(), genE())}, Type::integer());
+    sig("count", {Type::list(genA()), Type::func({genA()}, Type::boolean())}, Type::integer());
+    sig("sort",  {Type::list(genA())}, Type::list(genA()));
+    sig("sort",  {Type::list(genA()), Type::func({genA(), genA()}, Type::boolean())}, Type::list(genA()));
+    sig("min",   {Type::list(genA())}, genA());
+    sig("max",   {Type::list(genA())}, genA());
+    sig("sum",   {Type::list(numberLike())}, numberLike());
+    sig("join",  {Type::list(genA()), Type::string()}, Type::string());
+    sig("join",  {Type::list(genA())}, Type::string());
+    sig("flatten",{Type::list(Type::list(genA()))}, Type::list(genA()));
+    sig("zip",   {Type::list(genA()), Type::list(genE())},
+                 Type::list(Type::tuple({genA(), genE()})));
+    sig("to",    {genA(), genE()}, Type::unknown());
+
     // src/interpreter/stdlib/string.cxx, list.cxx, map.cxx
-    sig("digit?", {Type::charT()}, Type::boolean());
+    sig("digit?",  {Type::charT()}, Type::boolean());
     sig("contains?", {Type::string(), Type::string()}, Type::boolean());
     sig("empty?", {Type::list(genA())}, Type::boolean());
-    sig("has?", {Type::map(genA(), genE()), genA()}, Type::boolean());
+    sig("empty?", {Type::string()}, Type::boolean());
+    sig("has?",   {Type::map(genA(), genE()), genA()}, Type::boolean());
+
+    // src/interpreter/stdlib/string.cxx
+    sig("split",      {Type::string(), Type::string()}, Type::list(Type::string()));
+    sig("trim",       {Type::string()}, Type::string());
+    sig("upperCase",   {Type::string()}, Type::string());
+    sig("lowerCase", {Type::string()}, Type::string());
+    sig("reverse",    {Type::string()}, Type::string());
+    sig("reverse",    {Type::list(genA())}, Type::list(genA()));
+    sig("startsWith?", {Type::string(), Type::string()}, Type::boolean());
+    sig("endsWith?",   {Type::string(), Type::string()}, Type::boolean());
+    sig("chars",       {Type::string()}, Type::list(Type::charT()));
 
     return table;
 }

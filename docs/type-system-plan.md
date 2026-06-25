@@ -1,14 +1,15 @@
 # Kex Type System Plan
 
 Status (2026-06-25): phases 1, 2 (bignum half only), 3, 4, 4.5, and 5
-(scoped) are implemented. Phase 6 was attempted as a 6a audit — running
-`kex check` over every example for the first time ever surfaced enough
-real false positives (some from this session's own phase 5, several
-pre-existing from earlier sessions) that turning `kex check` into a gate
-is **not yet viable**; see phase 6's note for the full punch list of what
-was fixed vs. what's left. Phase 7 untouched. See the per-phase notes in
-Rollout phases for exactly what shipped vs. was scoped out.
-Originally written 2026-06-23.
+(scoped) are implemented. Phase 6 was attempted as a 6a audit (rounds 1
+and 2) and a 6b round (this session): `kex --check` now passes all 30
+example files except 4 with genuinely undefined identifiers in illustrative
+pseudocode (`closures.kex` users/words/strings/items, `maps.kex` users,
+`processes.kex` config, `real_world.kex` router) — zero checker false
+positives. Gating `kex run` on a clean check is now viable with a narrow
+allow-list or by fixing those 4 examples. Phase 7 untouched. See the
+per-phase notes in Rollout phases for exactly what shipped vs. was scoped
+out. Originally written 2026-06-23.
 
 ## Problem
 
@@ -967,11 +968,30 @@ running the whole pipeline. Concretely:
        `config`/`Database`/`Supervisor`/`Task`/`WebServer`: none of these
        are defined anywhere in their files. `kex check` correctly flags
        them; they're not false positives.
-   - **Conclusion:** don't wire `kex check` into `kex run` (even behind an
-     opt-in `--strict`) until the remaining "out of scope" items above are
-     cleared — closer than after round 1, but a `--strict` flag would
-     still reject a few real example files (`maps.kex`, `modules.kex`,
-     `real_world.kex`, `html_dsl.kex`).
+   - **Round 3 fixes (6b, this session):**
+     - Parser ambiguity: `let NAME = expr` at top level was always routed
+       to `parseFunctionDef()`, so `let ages = { ... }` produced a
+       zero-arg `FunctionDef` instead of a value binding. Fixed via
+       `isLetFunctionDefAhead()` helper + `MainBlock::synthetic` flag so
+       the bound name persists into subsequent top-level bindings
+       (previously each synthetic `MainBlock` pushed its own scope).
+     - Bare atom-key map literal: `{ host: "x" }` parsed `host` as a
+       variable reference instead of an atom literal. Fixed in
+       `parseMapOrBlock()`.
+     - Type aliases: `type Level = :a | :b | ...` wasn't resolved in
+       param annotations — `level: Level` rejected every `Atom` argument.
+       Fixed via `m_typeAliases` pre-pass + `UnionType` branch in
+       `argMatchesParam`.
+     - `ListExpr` homogeneity check fired when the first list element had
+       a TypeVar type (from pattern destructuring) and later elements were
+       concrete — the check only skipped when `t` was TypeVar, not when
+       `elemType` was. Fixed: adopt the concrete type when `elemType` is
+       permissive.
+   - **Conclusion after 6b:** zero checker false positives. Remaining errors
+     in 4 example files are genuine undefined identifiers in illustrative
+     pseudocode (`closures.kex`, `maps.kex`, `processes.kex`,
+     `real_world.kex`) — `kex check` correctly flags them. Wiring `kex
+     check` into `kex run` (phase 6's actual goal) is now viable.
 7. **NOT STARTED, BLOCKED on phases 1-6 being load-bearing enough to be worth querying.**
    Tooling consumers (LSP/formatter/lint) start querying the
    `TypedProgram` map and signature table built in phases 1-4; no new

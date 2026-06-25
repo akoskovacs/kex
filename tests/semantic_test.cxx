@@ -977,13 +977,21 @@ int main() {
             ));
         });
 
-        it("does not check a call to a function defined later in the file (forward reference)", []() {
+        it("forward references with compatible types pass", []() {
             assertTrue(noErrors(
-                "let useIt(x: Int) = laterFunc(x)\n"
+                "let useIt(x: String) = laterFunc(x)\n"
                 "let laterFunc(s: String) = s\n"
                 "main do\n"
-                "  useIt(1)\n"
+                "  useIt(\"hello\")\n"
                 "end\n"
+            ));
+        });
+
+        it("forward references with type mismatches are caught", []() {
+            assertTrue(hasError(
+                "let useIt(x: Int) = laterFunc(x)\n"
+                "let laterFunc(s: String) = s\n",
+                "laterFunc"
             ));
         });
 
