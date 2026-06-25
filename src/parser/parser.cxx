@@ -98,17 +98,15 @@ auto Parser::parseTopLevelItem() -> ast::TopLevelItem {
         return parseFunctionDef(true);
     }
     if (check(TokenType::Let)) {
-        // let { ... } = ... or let ( ... ) = ... is a destructuring binding, not function def
-        auto nextTok = peekNext().type;
-        if (nextTok == TokenType::LBrace || nextTok == TokenType::LParen ||
-            nextTok == TokenType::LBracket) {
-            // Parse as top-level expression (let binding)
-            auto mainBlock = std::make_unique<ast::MainBlock>();
-            mainBlock->location = currentLocation();
-            mainBlock->body.push_back(parseExpr());
-            return mainBlock;
+        if (isLetFunctionDefAhead()) {
+            return parseFunctionDef();
         }
-        return parseFunctionDef();
+        // Plain value binding or destructuring (let { ... } = ..., let x = expr, etc.)
+        auto mainBlock = std::make_unique<ast::MainBlock>();
+        mainBlock->location = currentLocation();
+        mainBlock->synthetic = true;
+        mainBlock->body.push_back(parseExpr());
+        return mainBlock;
     }
 
     // Top-level type annotation: `name : Type` — must be checked before
@@ -1595,10 +1593,7 @@ auto Parser::parseWhileExpr() -> ast::ExprPtr {
     return expr;
 }
 
-auto Parser::parseLetExpr() -> ast::ExprPtr {
-    auto loc = currentLocation();
-
-    // Check if this is actually a function def: let name(...) or let name = ...
+auto Parser::isLetFunctionDefAhead() -> bool {
     // Note: some keywords can be used as function names (e.g. 'loop', 'where')
     auto nextType = peekNext().type;
     bool isNameToken = nextType == TokenType::LowerIdent ||
@@ -1606,18 +1601,24 @@ auto Parser::parseLetExpr() -> ast::ExprPtr {
                        nextType == TokenType::Match || nextType == TokenType::SpliceIdent ||
                        nextType == TokenType::Plus || nextType == TokenType::Minus ||
                        nextType == TokenType::Star || nextType == TokenType::EqEq;
-    if (isNameToken) {
-        // Look further: is there a ( after the name? Or is it let name = expr (simple binding)?
-        auto savedPos = m_pos;
-        advance(); // let
-        advance(); // name
-        // It's a function def if followed by ( or -> (return type) or do or ? (predicate)
-        // It's a simple let binding if followed by = directly
-        bool isFuncDef = check(TokenType::LParen) || check(TokenType::Do) ||
-                         check(TokenType::Arrow) || check(TokenType::Question);
-        m_pos = savedPos;
+    if (!isNameToken) return false;  // `let { ... }`, `let ( ... )`, `let [ ... ]` — destructuring
 
-        if (isFuncDef) {
+    // Look further: is there a ( after the name? Or is it let name = expr (simple binding)?
+    auto savedPos = m_pos;
+    advance(); // let
+    advance(); // name
+    // It's a function def if followed by ( or -> (return type) or do or ? (predicate)
+    // It's a simple let binding if followed by = directly
+    bool isFuncDef = check(TokenType::LParen) || check(TokenType::Do) ||
+                     check(TokenType::Arrow) || check(TokenType::Question);
+    m_pos = savedPos;
+    return isFuncDef;
+}
+
+auto Parser::parseLetExpr() -> ast::ExprPtr {
+    auto loc = currentLocation();
+
+    if (isLetFunctionDefAhead()) {
             // Parse as inline function def, wrap in a dummy expr
             auto funcDef = parseFunctionDef();
             auto expr = std::make_unique<ast::Expr>();
@@ -1630,15 +1631,26 @@ auto Parser::parseLetExpr() -> ast::ExprPtr {
             auto lambda = std::make_unique<ast::Expr>();
             lambda->location = loc;
             if (!funcDef->clauses.empty()) {
+                // Preserve the clause's params — they were previously
+                // silently dropped (`{}`), so a local function defined this
+                // way (`let loop(state: Int) do ... end`) compiled to a
+                // zero-param Lambda whose body still referenced `state`,
+                // which was never bound to anything.
+                std::vector<ast::LambdaParam> params;
+                for (auto& param : funcDef->clauses[0].params) {
+                    ast::LambdaParam lp;
+                    lp.name = param.name.value_or("_");
+                    lp.type = std::move(param.type);
+                    params.push_back(std::move(lp));
+                }
                 lambda->kind = ast::Lambda{
-                    {}, std::move(funcDef->clauses[0].body)};
+                    std::move(params), std::move(funcDef->clauses[0].body)};
             } else {
                 lambda->kind = ast::Lambda{{}, {}};
             }
 
             expr->kind = ast::LetExpr{std::move(pat), std::move(lambda)};
             return expr;
-        }
     }
 
     auto expr = std::make_unique<ast::Expr>();

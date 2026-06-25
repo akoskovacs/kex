@@ -123,17 +123,27 @@ auto TypeChecker::checkMatchExhaustiveness(const ast::MatchExpr& node, SourceLoc
                 if (!guarded) hasUnguardedCatchAll = true;
                 continue;
             }
-            auto* ctor = std::get_if<ast::ConstructorPattern>(&pat->kind);
-            if (!ctor) continue;  // literal/list/tuple/record/range patterns don't drive ADT exhaustiveness
+            std::string ctorName;
+            if (auto* ctor = std::get_if<ast::ConstructorPattern>(&pat->kind)) {
+                ctorName = ctor->name;
+            } else if (auto* lit = std::get_if<ast::LiteralPattern>(&pat->kind);
+                       lit && lit->literal.type == TokenType::None) {
+                // `None` lexes as its own TokenType::None (lexer.cxx), so
+                // it parses as a LiteralPattern, not ConstructorPattern{
+                // "None"} — treat it as the Option constructor it is.
+                ctorName = "None";
+            } else {
+                continue;  // literal/list/tuple/record/range patterns don't drive ADT exhaustiveness
+            }
 
-            auto it = m_adtOfConstructor.find(ctor->name);
+            auto it = m_adtOfConstructor.find(ctorName);
             if (it == m_adtOfConstructor.end()) {
                 inconclusive = true;  // unregistered constructor — can't prove the closed set
                 continue;
             }
             if (adtName.empty()) adtName = it->second;
             else if (adtName != it->second) inconclusive = true;  // patterns span more than one ADT
-            if (!guarded) covered.insert(ctor->name);
+            if (!guarded) covered.insert(ctorName);
         }
     }
 
@@ -172,6 +182,11 @@ auto TypeChecker::resolveTypeExpr(const ast::TypeExpr& typeExpr,
                 return var;
             }
             if (auto known = m_globals.get(last)) return known;
+            // Trait-only names (Float, Number, Comparable, ...) have no
+            // concrete Type — m_globals deliberately has no entry for them
+            // (see check()'s comment) — so a param annotated `Float` means
+            // "any T satisfying Float", same as an explicit constraint.
+            if (m_traits.get(last)) return Type::constrained(last, last);
             return Type::named(last);  // unregistered record/ADT name — nameable, not yet structurally known
         }
         else if constexpr (std::is_same_v<T, ast::GenericType>) {
@@ -344,9 +359,17 @@ auto TypeChecker::checkMakeDef(const ast::MakeDef& def) -> void {
 }
 
 auto TypeChecker::checkMainBlock(const ast::MainBlock& block) -> void {
-    pushScope();
+    if (!block.synthetic) pushScope();
+    for (const auto& param : block.params) {
+        if (param.name.has_value() && *param.name != "_") {
+            defineVar(*param.name, freshTypeVar());
+        }
+        if (param.pattern) {
+            bindPatternVars(**param.pattern);
+        }
+    }
     inferBody(block.body);
-    popScope();
+    if (!block.synthetic) popScope();
 }
 
 auto TypeChecker::inferBody(const std::vector<ast::ExprPtr>& body) -> TypePtr {
@@ -393,6 +416,12 @@ auto TypeChecker::inferExpr(const ast::Expr& expr) -> TypePtr {
             auto valueType = node.value ? inferExpr(*node.value) : Type::unknown();
             if (auto* varPat = std::get_if<ast::VarPattern>(&node.pattern->kind)) {
                 defineVar(varPat->name, valueType);
+            } else if (node.pattern) {
+                // Other destructuring shapes (`let { host, port } = ...`,
+                // `let (a, b) = ...`) don't have a single value type to
+                // propagate per binding — fresh type vars, same fallback
+                // bindPatternVars uses everywhere else.
+                bindPatternVars(*node.pattern);
             }
             return Type::unit();
         }
@@ -442,7 +471,15 @@ auto TypeChecker::inferExpr(const ast::Expr& expr) -> TypePtr {
             for (const auto& [_, arg] : node.namedArgs) {
                 if (arg) inferExpr(*arg);
             }
-            if (node.block) inferExpr(**node.block);
+            if (node.block) {
+                inferExpr(**node.block);
+                // A trailing `do...end`/`{ }` block fills the callee's last
+                // param slot (e.g. `times(3) do ... end` is 2 arguments to
+                // `times(n, block)`, not 1) — Block<T> isn't structurally
+                // modeled yet (resolveTypeExpr's BlockType case), so this is
+                // a permissive placeholder, not the block's real type.
+                argTypes.push_back(Type::unknown());
+            }
             return checkCall(node.name, argTypes, expr.location);
         }
         else if constexpr (std::is_same_v<T, ast::MethodCall>) {
@@ -454,7 +491,10 @@ auto TypeChecker::inferExpr(const ast::Expr& expr) -> TypePtr {
             for (const auto& [_, arg] : node.namedArgs) {
                 if (arg) inferExpr(*arg);
             }
-            if (node.block) inferExpr(**node.block);
+            if (node.block) {
+                inferExpr(**node.block);
+                argTypes.push_back(Type::unknown());
+            }
             return checkCall(node.method, argTypes, expr.location);
         }
         else if constexpr (std::is_same_v<T, ast::ListExpr>) {
@@ -740,6 +780,33 @@ auto TypeChecker::argMatchesParam(const TypePtr& argType, const TypePtr& paramTy
     // that distinction *is* runtime-backed today.
     if (m_traits.satisfies(argType, "Integer") && m_traits.satisfies(paramType, "Integer")) return true;
     if (m_traits.satisfies(argType, "Float") && m_traits.satisfies(paramType, "Float")) return true;
+
+    // Recurse into compound types structurally rather than requiring exact
+    // equality — e.g. `[Int]` vs `[Integer]` (the relaxation above, but
+    // inside a list) and `String` (= `[Char]`) vs a generic `[A]` param
+    // both need this, not just bare params.
+    if (auto* paramList = std::get_if<ListType>(&paramType->kind)) {
+        auto* argList = std::get_if<ListType>(&argType->kind);
+        return argList && argMatchesParam(argList->element, paramList->element);
+    }
+    if (auto* paramTuple = std::get_if<TupleType>(&paramType->kind)) {
+        auto* argTuple = std::get_if<TupleType>(&argType->kind);
+        if (!argTuple || argTuple->elements.size() != paramTuple->elements.size()) return false;
+        for (size_t i = 0; i < paramTuple->elements.size(); i++) {
+            if (!argMatchesParam(argTuple->elements[i], paramTuple->elements[i])) return false;
+        }
+        return true;
+    }
+    if (auto* paramMap = std::get_if<MapType>(&paramType->kind)) {
+        auto* argMap = std::get_if<MapType>(&argType->kind);
+        return argMap && argMatchesParam(argMap->key, paramMap->key) &&
+               argMatchesParam(argMap->value, paramMap->value);
+    }
+    if (auto* paramOpt = std::get_if<OptionalType>(&paramType->kind)) {
+        auto* argOpt = std::get_if<OptionalType>(&argType->kind);
+        return argOpt && argMatchesParam(argOpt->inner, paramOpt->inner);
+    }
+
     return typesEqual(argType, paramType);
 }
 
@@ -767,6 +834,53 @@ auto TypeChecker::checkCall(const std::string& name, const std::vector<TypePtr>&
         if (it != m_userSignatures.end()) sigs = &it->second;
     }
     if (!sigs) return Type::unknown();  // unknown name, or not yet registered (forward/recursive ref)
+
+    // `let hello = makeGreeter("Hello")` is a top-level zero-arg binding
+    // (every top-level `let NAME = EXPR` is a 0-param function — see
+    // Parser::parseFunctionDef), and referencing it as a bare identifier
+    // auto-calls it (Evaluator::autoCallZeroArgConstant). `hello("Alice")`
+    // is the same idiom through a call: auto-call `hello` to get the
+    // closure `makeGreeter` returned, then apply "Alice" to *that* — not
+    // "call hello with 1 argument," which is what zero arity would
+    // otherwise mean. Only a single, unambiguous 0-param signature
+    // triggers this (an overload set with a 0-param AND non-0-param
+    // signature is a real arity question, not this idiom).
+    if (sigs->size() == 1 && (*sigs)[0].params.empty() && !argTypes.empty()) {
+        return Type::unknown();
+    }
+
+    // `This` (the trait placeholder — see Surface syntax for declaring a
+    // trait in the plan) has no substitution mechanism implemented yet, so
+    // it can leak through as a literal NamedType("This") from a `param :
+    // This` annotation inside a `make` block. A call involving it can't be
+    // meaningfully checked against any signature here — reporting a
+    // mismatch against the wrong (stdlib or unrelated) candidate would be
+    // actively misleading, so bail out rather than guess.
+    for (const auto& argType : argTypes) {
+        if (auto* named = std::get_if<NamedType>(&argType->kind); named && named->name == "This") {
+            return Type::unknown();
+        }
+    }
+
+    // Name collision guard: a make-block method isn't registered here at
+    // all (see checkFunctionDef), so `this.modulo(...)` inside a
+    // user-defined `make CustomType do let modulo(...) ... end` would
+    // otherwise get checked against the *stdlib* `modulo`'s signature
+    // purely because the names match — a different, unrelated function.
+    // Only kick in when the receiver/first argument is itself a NamedType
+    // (a record/ADT/custom-type value) — a builtin-primitive mismatch
+    // (e.g. `even?('c')`) must still error normally; this only suppresses
+    // the case where nothing in the known overload set could ever apply.
+    if (!argTypes.empty() && std::holds_alternative<NamedType>(argTypes[0]->kind)) {
+        bool anyFirstParamPlausible = false;
+        for (const auto& sig : *sigs) {
+            if (!sig.params.empty() && argMatchesParam(argTypes[0], sig.params[0])) {
+                anyFirstParamPlausible = true;
+                break;
+            }
+        }
+        if (!anyFirstParamPlausible) return Type::unknown();
+    }
 
     std::vector<const Signature*> arityMatches;
     std::vector<const Signature*> fullMatches;

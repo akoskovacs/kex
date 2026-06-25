@@ -456,6 +456,10 @@ struct MainBlock {
     SourceLocation location;
     std::vector<Param> params;
     std::vector<ExprPtr> body;
+    // True for synthetic wrappers created by parseTopLevelItem around plain
+    // `let x = expr` bindings — these should NOT push a new env scope so
+    // that bound names remain visible to subsequent top-level items.
+    bool synthetic = false;
 };
 
 struct Pragma {

@@ -114,6 +114,123 @@ int main() {
         });
     });
 
+    describe("Interpreter — Arbitrary precision Integer", []() {
+        it("stays a plain Int for values that fit in int64_t", []() {
+            auto result = run("main do\n  5 + 3\nend\n");
+            assertTrue(std::holds_alternative<IntValue>(result->data));
+        });
+
+        it("promotes + to BigIntValue on int64_t overflow", []() {
+            auto result = run("main do\n  9223372036854775807 + 1\nend\n");
+            assertTrue(std::holds_alternative<BigIntValue>(result->data));
+            assertEqual(result->toString(), std::string("9223372036854775808"));
+        });
+
+        it("promotes - on underflow (negating beyond INT64_MIN)", []() {
+            auto result = run("main do\n  -9223372036854775807 - 2\nend\n");
+            assertTrue(std::holds_alternative<BigIntValue>(result->data));
+            assertEqual(result->toString(), std::string("-9223372036854775809"));
+        });
+
+        it("promotes * on overflow", []() {
+            auto result = run("main do\n  9223372036854775807 * 2\nend\n");
+            assertTrue(std::holds_alternative<BigIntValue>(result->data));
+        });
+
+        it("parses a literal too large for int64_t directly as a bignum", []() {
+            auto result = run("main do\n  100000000000000000000\nend\n");
+            assertTrue(std::holds_alternative<BigIntValue>(result->data));
+            assertEqual(result->toString(), std::string("100000000000000000000"));
+        });
+
+        it("computes factorial(25), far beyond int64_t range", []() {
+            auto result = run(
+                "let factorial(n) do\n"
+                "  if n <= 1\n"
+                "    1\n"
+                "  else\n"
+                "    n * factorial(n - 1)\n"
+                "  end\n"
+                "end\n"
+                "main do\n"
+                "  factorial(25)\n"
+                "end\n"
+            );
+            assertEqual(result->toString(), std::string("15511210043330985984000000"));
+        });
+
+        it("demotes a bignum result back to Int once it fits again", []() {
+            auto result = run("main do\n  let big = 100000000000000000000\n  big - big\nend\n");
+            assertTrue(std::holds_alternative<IntValue>(result->data));
+            assertEqual(std::get<IntValue>(result->data).value, int64_t(0));
+        });
+
+        it("negates a bignum", []() {
+            auto result = run("main do\n  let big = 100000000000000000000\n  -big\nend\n");
+            assertEqual(result->toString(), std::string("-100000000000000000000"));
+        });
+
+        it("compares Int against BigIntValue correctly", []() {
+            auto result = run("main do\n  let big = 100000000000000000000\n  5 < big\nend\n");
+            assertTrue(std::get<BoolValue>(result->data).value);
+        });
+
+        it("equates a bignum with an equal-valued Int-shaped literal", []() {
+            auto result = run(
+                "main do\n  let big = 100000000000000000000\n  big == 100000000000000000000\nend\n"
+            );
+            assertTrue(std::get<BoolValue>(result->data).value);
+        });
+
+        it("divides and computes modulo on a bignum", []() {
+            assertEqual(
+                run("main do\n  100000000000000000000 / 3\nend\n")->toString(),
+                std::string("33333333333333333333")
+            );
+            assertEqual(
+                run("main do\n  100000000000000000000 % 7\nend\n")->toString(),
+                std::string("2")
+            );
+        });
+
+        it("matches a match clause against a big integer literal pattern", []() {
+            auto result = run(
+                "main do\n"
+                "  let big = 100000000000000000000\n"
+                "  match big do\n"
+                "    100000000000000000000 -> \"matched\"\n"
+                "    _ -> \"no match\"\n"
+                "  end\n"
+                "end\n"
+            );
+            assertEqual(std::get<StringValue>(result->data).value, std::string("matched"));
+        });
+
+        it("even?/odd? work on a bignum", []() {
+            assertTrue(std::get<BoolValue>(
+                run("main do\n  100000000000000000000.even?\nend\n")->data).value);
+            assertTrue(std::get<BoolValue>(
+                run("main do\n  (100000000000000000000 + 1).odd?\nend\n")->data).value);
+        });
+
+        it("abs works on a negative bignum", []() {
+            auto result = run("main do\n  (-100000000000000000000).abs\nend\n");
+            assertEqual(result->toString(), std::string("100000000000000000000"));
+        });
+
+        it("Integer.parse handles a string too large for int64_t", []() {
+            auto result = run(
+                "main do\n"
+                "  match Integer.parse(\"999999999999999999999999\") do\n"
+                "    Ok(n) -> n\n"
+                "    Error(e) -> e\n"
+                "  end\n"
+                "end\n"
+            );
+            assertEqual(result->toString(), std::string("999999999999999999999999"));
+        });
+    });
+
     describe("Interpreter — Comparison", []() {
         it("== on equal values", []() {
             auto result = run("main do\n  5 == 5\nend\n");
@@ -242,6 +359,27 @@ int main() {
                 "main do\n  greet(\"Alice\", 1994)\nend\n"
             );
             assertEqual(output, std::string("Hello, Alice (32)\n"));
+        });
+
+        it("nested local function (let name(params) do...end inside a body) keeps its params", []() {
+            // Parser::parseLetExpr desugars this shape to a Lambda — its
+            // params were previously dropped entirely (hardcoded `{}`),
+            // so the body's references to them resolved to whatever the
+            // *enclosing* scope happened to have, or nothing at all.
+            auto result = run(
+                "let countTo(n: Int) do\n"
+                "  let loop(state: Int) do\n"
+                "    if state >= n\n"
+                "      state\n"
+                "    else\n"
+                "      loop(state + 1)\n"
+                "    end\n"
+                "  end\n"
+                "  loop(0)\n"
+                "end\n"
+                "main do\n  countTo(5)\nend\n"
+            );
+            assertEqual(std::get<IntValue>(result->data).value, int64_t(5));
         });
     });
 
@@ -1014,6 +1152,31 @@ int main() {
             auto result = run("main do\n  (1..5).to(List)\nend\n");
             auto& list = std::get<ListValue>(result->data);
             assertEqual(list.elements.size(), size_t(5));
+        });
+    });
+
+    describe("Interpreter — top-level value binding scope", []() {
+        it("top-level `let x = expr` is visible in subsequent top-level bindings", []() {
+            // Regression: before the parser+evaluator fix each top-level `let`
+            // wrapped in a scoped MainBlock, so `y` couldn't see `x`.
+            auto result = run(
+                "let x = 10\n"
+                "let y = x * 3\n"
+                "main do\n"
+                "  y\n"
+                "end\n"
+            );
+            assertEqual(std::get<IntValue>(result->data).value, int64_t(30));
+        });
+
+        it("top-level `let` binding a list is accessible by name", []() {
+            auto result = run(
+                "let items = [1, 2, 3]\n"
+                "main do\n"
+                "  items.size\n"
+                "end\n"
+            );
+            assertEqual(std::get<IntValue>(result->data).value, int64_t(3));
         });
     });
 

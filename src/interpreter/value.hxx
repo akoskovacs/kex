@@ -1,6 +1,7 @@
 #pragma once
 
 #include <functional>
+#include <gmpxx.h>
 #include <memory>
 #include <optional>
 #include <string>
@@ -15,6 +16,12 @@ using ValuePtr = std::shared_ptr<Value>;
 
 struct NoneValue {};
 struct IntValue { int64_t value; };
+// The arbitrary-precision case of `Integer` — only ever constructed once a
+// value no longer fits in IntValue's int64_t (see integerResult/asInteger
+// in value.cxx and the overflow-checked arithmetic in evaluator.cxx).
+// IntValue stays the fast path for every value that fits; this is the
+// fallback, not a parallel "the" representation of Integer.
+struct BigIntValue { mpz_class value; };
 struct FloatValue { double value; };
 struct StringValue { std::string value; };
 struct CharValue { char value; };
@@ -55,6 +62,7 @@ struct Value {
     std::variant<
         NoneValue,
         IntValue,
+        BigIntValue,
         FloatValue,
         StringValue,
         CharValue,
@@ -72,6 +80,7 @@ struct Value {
 
     static auto none() -> ValuePtr;
     static auto integer(int64_t v) -> ValuePtr;
+    static auto bigInteger(mpz_class v) -> ValuePtr;
     static auto floating(double v) -> ValuePtr;
     static auto string(std::string v) -> ValuePtr;
     static auto character(char v) -> ValuePtr;
@@ -88,6 +97,17 @@ struct Value {
 };
 
 auto valuesEqual(const ValuePtr& a, const ValuePtr& b) -> bool;
+
+// Extracts the value as an mpz_class if it's IntValue or BigIntValue
+// (the two runtime representations of `Integer`), else nullopt — the
+// shared entry point for any integer-aware op (arithmetic, comparison,
+// pattern matching) that needs to treat both representations uniformly.
+auto asInteger(const ValuePtr& v) -> std::optional<mpz_class>;
+
+// Demotes a computed mpz_class result back to the fast IntValue
+// representation when it still fits in int64_t (e.g. a bignum result
+// shrinking back down), otherwise keeps the bignum representation.
+auto integerResult(mpz_class v) -> ValuePtr;
 
 // Text content of a String, a Char, or a ListValue whose elements are all
 // Char — nullopt for anything else. String/Char/[Char] are meant to be

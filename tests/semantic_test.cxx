@@ -897,6 +897,22 @@ int main() {
             ));
         });
 
+        it("accepts an Option match that does cover None", []() {
+            // None lexes as its own TokenType::None and parses as a
+            // LiteralPattern, not ConstructorPattern{"None"} — a clause
+            // set with both Just and None present must be recognized as
+            // exhaustive, not just one without the other.
+            assertTrue(noErrors(
+                "main do\n"
+                "  let x = Just(1)\n"
+                "  match x do\n"
+                "    Just(v) -> v\n"
+                "    None -> 0\n"
+                "  end\n"
+                "end\n"
+            ));
+        });
+
         it("does not count a guarded clause alone as covering its constructor", []() {
             assertTrue(hasError(
                 "type Shape = Circle(Float) | Rectangle(Float, Float)\n"
@@ -978,6 +994,81 @@ int main() {
                 "end\n"
                 "main do\n"
                 "  let x = 5.describe(42)\n"
+                "end\n"
+            ));
+        });
+
+        it("accepts calling a zero-arg top-level binding with arguments (auto-call-then-apply)", []() {
+            // Every top-level `let NAME = EXPR` is a 0-param function
+            // (Parser::parseFunctionDef) — referencing it auto-calls it
+            // (Evaluator::autoCallZeroArgConstant), so `hello("Alice")`
+            // means "call hello(), then apply 'Alice' to the result,"
+            // not "call hello with 1 argument" (a real arity mismatch).
+            assertTrue(noErrors(
+                "let makeGreeter(prefix: String) -> (String -> String) do\n"
+                "  return { |name| \"${prefix}, ${name}!\" }\n"
+                "end\n"
+                "let hello = makeGreeter(\"Hello\")\n"
+                "main do\n"
+                "  hello(\"Alice\")\n"
+                "end\n"
+            ));
+        });
+
+        it("counts a trailing do...end block as an argument toward arity", []() {
+            assertTrue(noErrors(
+                "let times(n: Int, block: Block<[()]>) do\n"
+                "  (1..n).each { |_| block() }\n"
+                "end\n"
+                "main do\n"
+                "  times(3) do\n"
+                "    IO.printLine(\"hello\")\n"
+                "  end\n"
+                "end\n"
+            ));
+        });
+    });
+
+    describe("Semantic — main(params) binding", []() {
+        it("binds main's params so they're not flagged as undefined", []() {
+            assertTrue(noErrors(
+                "main(args) do\n"
+                "  IO.printLine(args)\n"
+                "end\n"
+            ));
+        });
+    });
+
+    describe("Semantic — top-level value binding scope", []() {
+        it("top-level `let x = expr` is visible to subsequent top-level bindings", []() {
+            assertTrue(noErrors(
+                "let base = 10\n"
+                "let doubled = base * 2\n"
+                "main do\n"
+                "  IO.printLine(doubled)\n"
+                "end\n"
+            ));
+        });
+
+        it("top-level `let x = expr` is not confused with a function def", []() {
+            // Before the parser fix `let greeting = \"hi\"` was parsed as a
+            // FunctionDef; now it's a plain LetExpr in a synthetic MainBlock.
+            assertTrue(noErrors(
+                "let greeting = \"hello\"\n"
+                "main do\n"
+                "  IO.printLine(greeting)\n"
+                "end\n"
+            ));
+        });
+
+        it("still parses actual function defs correctly after the fix", []() {
+            assertTrue(noErrors(
+                "let add(a: Int, b: Int) -> Int do\n"
+                "  a + b\n"
+                "end\n"
+                "main do\n"
+                "  let r = add(1, 2)\n"
+                "  IO.printLine(r)\n"
                 "end\n"
             ));
         });

@@ -183,6 +183,9 @@ auto Analyzer::analyzeFunctionDef(const ast::FunctionDef& def) -> void {
                 m_symbols.define(Symbol{
                     *param.name, SymbolKind::Variable, false, false, true, def.location});
             }
+            if (param.pattern) {
+                bindPatternVars(**param.pattern, def.location);
+            }
         }
 
         analyzeBody(clause.body);
@@ -193,14 +196,29 @@ auto Analyzer::analyzeFunctionDef(const ast::FunctionDef& def) -> void {
 }
 
 auto Analyzer::analyzeMainBlock(const ast::MainBlock& block) -> void {
-    m_symbols.pushScope(true); // main is implicitly foul
+    // Synthetic top-level binding wrappers run in the global scope so that
+    // `let x = expr` at top level remains visible to subsequent items.
+    if (!block.synthetic) m_symbols.pushScope(true); // main is implicitly foul
     bool prevFoul = m_inFoulContext;
     m_inFoulContext = true;
+
+    // `main(args) do ... end` — args (and any pattern-shaped param) wasn't
+    // registered at all before, so referencing it inside main's body
+    // always failed with "Undefined identifier".
+    for (const auto& param : block.params) {
+        if (param.name.has_value() && *param.name != "_") {
+            m_symbols.define(Symbol{
+                *param.name, SymbolKind::Variable, false, false, true, block.location});
+        }
+        if (param.pattern) {
+            bindPatternVars(**param.pattern, block.location);
+        }
+    }
 
     analyzeBody(block.body);
 
     m_inFoulContext = prevFoul;
-    m_symbols.popScope();
+    if (!block.synthetic) m_symbols.popScope();
 }
 
 auto Analyzer::analyzeBody(const std::vector<ast::ExprPtr>& body) -> void {
@@ -215,11 +233,11 @@ auto Analyzer::analyzeExpr(const ast::Expr& expr) -> void {
 
         if constexpr (std::is_same_v<T, ast::LetExpr>) {
             if (node.value) analyzeExpr(*node.value);
-            // Register bound name
-            if (auto* varPat = std::get_if<ast::VarPattern>(&node.pattern->kind)) {
-                m_symbols.define(Symbol{
-                    varPat->name, SymbolKind::Variable, false, false, true, expr.location});
-            }
+            // bindPatternVars generalizes the old VarPattern-only check to
+            // every destructuring shape `let` accepts (e.g. `let { host,
+            // port } = config`, `let (a, b) = pair`), which weren't
+            // registering their bound names at all before.
+            if (node.pattern) bindPatternVars(*node.pattern, expr.location);
         }
         else if constexpr (std::is_same_v<T, ast::VarExpr>) {
             if (node.value) analyzeExpr(*node.value);

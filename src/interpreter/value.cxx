@@ -11,6 +11,26 @@ auto Value::integer(int64_t v) -> ValuePtr {
     return std::make_shared<Value>(Value{IntValue{v}});
 }
 
+auto Value::bigInteger(mpz_class v) -> ValuePtr {
+    return std::make_shared<Value>(Value{BigIntValue{std::move(v)}});
+}
+
+auto asInteger(const ValuePtr& v) -> std::optional<mpz_class> {
+    // long is 64-bit on every platform this project targets (LP64) — see
+    // integerResult's fits_slong_p() below; the explicit cast avoids an
+    // ambiguous int64_t (long long) -> mpz_class overload resolution.
+    if (auto* i = std::get_if<IntValue>(&v->data)) return mpz_class(static_cast<long>(i->value));
+    if (auto* b = std::get_if<BigIntValue>(&v->data)) return b->value;
+    return std::nullopt;
+}
+
+auto integerResult(mpz_class v) -> ValuePtr {
+    // `long` is 64-bit on every platform this project targets (LP64), so
+    // fits_slong_p matches int64_t's range.
+    if (v.fits_slong_p()) return Value::integer(v.get_si());
+    return Value::bigInteger(std::move(v));
+}
+
 auto Value::floating(double v) -> ValuePtr {
     return std::make_shared<Value>(Value{FloatValue{v}});
 }
@@ -57,6 +77,7 @@ auto Value::toString() const -> std::string {
         using T = std::decay_t<decltype(v)>;
         if constexpr (std::is_same_v<T, NoneValue>) return "None";
         else if constexpr (std::is_same_v<T, IntValue>) return std::to_string(v.value);
+        else if constexpr (std::is_same_v<T, BigIntValue>) return v.value.get_str();
         else if constexpr (std::is_same_v<T, FloatValue>) {
             auto s = std::to_string(v.value);
             // Remove trailing zeros but keep at least one decimal
@@ -225,6 +246,7 @@ auto Value::typeName() const -> std::string {
         using T = std::decay_t<decltype(v)>;
         if constexpr (std::is_same_v<T, NoneValue>) return "None";
         else if constexpr (std::is_same_v<T, IntValue>) return "Int";
+        else if constexpr (std::is_same_v<T, BigIntValue>) return "Integer";
         else if constexpr (std::is_same_v<T, FloatValue>) return "Float";
         else if constexpr (std::is_same_v<T, StringValue>) return "String";
         else if constexpr (std::is_same_v<T, CharValue>) return "Char";
@@ -279,6 +301,13 @@ auto valuesEqual(const ValuePtr& a, const ValuePtr& b) -> bool {
         auto at = stringOrCharListText(a);
         auto bt = stringOrCharListText(b);
         if (at && bt) return *at == *bt;
+    }
+
+    // IntValue and BigIntValue are both just `Integer` — compare across
+    // representations rather than requiring an exact variant match (the
+    // generic std::visit below only compares same-variant).
+    if (auto av = asInteger(a)) {
+        if (auto bv = asInteger(b)) return *av == *bv;
     }
 
     return std::visit([&b](const auto& av) -> bool {
