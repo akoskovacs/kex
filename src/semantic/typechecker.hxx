@@ -18,6 +18,11 @@ class TypeChecker {
 public:
     auto check(const ast::Program& program, std::vector<Diagnostic>& diagnostics) -> void;
 
+    // Query the inferred type of any expression node after check() has run.
+    // Returns nullptr for nodes not visited (e.g. unreachable code).
+    auto typeOf(const ast::Expr* expr) const -> TypePtr;
+    auto typeMap() const -> const std::unordered_map<const ast::Expr*, TypePtr>&;
+
 private:
     // Top-level
     auto checkTopLevel(const ast::TopLevelItem& item) -> void;
@@ -131,6 +136,9 @@ private:
     // phase 5b, not attempted here).
     std::unordered_map<std::string, std::vector<Signature>> m_userSignatures;
     bool m_inMakeBlock = false;
+
+    // Populated by inferExpr; maps each visited Expr node to its inferred type.
+    std::unordered_map<const ast::Expr*, TypePtr> m_typeMap;
 
     auto freshTypeVar() -> TypePtr;
 };

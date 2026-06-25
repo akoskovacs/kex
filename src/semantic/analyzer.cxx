@@ -50,8 +50,7 @@ auto Analyzer::analyze(const ast::Program& program) -> bool {
     }
 
     // Phase 2: type checking
-    TypeChecker typeChecker;
-    typeChecker.check(program, m_diagnostics);
+    m_checker.check(program, m_diagnostics);
 
     return std::none_of(m_diagnostics.begin(), m_diagnostics.end(),
         [](const Diagnostic& d) { return d.level == Diagnostic::Level::Error; });
@@ -59,6 +58,14 @@ auto Analyzer::analyze(const ast::Program& program) -> bool {
 
 auto Analyzer::diagnostics() const -> const std::vector<Diagnostic>& {
     return m_diagnostics;
+}
+
+auto Analyzer::typeOf(const ast::Expr* expr) const -> TypePtr {
+    return m_checker.typeOf(expr);
+}
+
+auto Analyzer::typeMap() const -> const std::unordered_map<const ast::Expr*, TypePtr>& {
+    return m_checker.typeMap();
 }
 
 auto Analyzer::analyzeTopLevel(const ast::TopLevelItem& item) -> void {

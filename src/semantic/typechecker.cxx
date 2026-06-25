@@ -566,8 +566,17 @@ auto TypeChecker::inferBody(const std::vector<ast::ExprPtr>& body) -> TypePtr {
     return lastType;
 }
 
+auto TypeChecker::typeOf(const ast::Expr* expr) const -> TypePtr {
+    auto it = m_typeMap.find(expr);
+    return it != m_typeMap.end() ? it->second : nullptr;
+}
+
+auto TypeChecker::typeMap() const -> const std::unordered_map<const ast::Expr*, TypePtr>& {
+    return m_typeMap;
+}
+
 auto TypeChecker::inferExpr(const ast::Expr& expr) -> TypePtr {
-    return std::visit([this, &expr](const auto& node) -> TypePtr {
+    auto result = std::visit([this, &expr](const auto& node) -> TypePtr {
         using T = std::decay_t<decltype(node)>;
 
         if constexpr (std::is_same_v<T, ast::IntLiteral>) {
@@ -851,6 +860,8 @@ auto TypeChecker::inferExpr(const ast::Expr& expr) -> TypePtr {
             return Type::unknown();
         }
     }, expr.kind);
+    m_typeMap[&expr] = result;
+    return result;
 }
 
 auto TypeChecker::inferBinaryOp(TokenType op, const TypePtr& left, const TypePtr& right,
