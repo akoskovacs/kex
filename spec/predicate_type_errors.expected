@@ -1,1 +1,4 @@
-Parse error: digit? expects a Char, got String
+spec/predicate_type_errors.kex:7:30: error: `digit?` expects argument 1 to be Char, but got String
+
+digit? : Char -> Bool
+Aborted: fix type errors before running (use --no-check to skip).

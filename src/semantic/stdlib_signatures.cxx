@@ -39,6 +39,7 @@ auto SignatureTable::withStdlib() -> SignatureTable {
     sig("abs", {numberLike()}, numberLike());
     sig("modulo", {integerLike(), integerLike()}, Type::integer());
     sig("in?", {numberLike(), Type::named("Range", {numberLike()})}, Type::boolean());
+    sig("in?", {Type::charT(), Type::named("Range", {Type::charT()})}, Type::boolean());
     sig("times", {integerLike(), Type::func({integerLike()}, Type::unit())}, Type::unit());
     sig("Integer::parse", {Type::string()},
         Type::named("Result", {Type::integer(), Type::string()}));

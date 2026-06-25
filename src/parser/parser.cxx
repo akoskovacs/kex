@@ -1596,12 +1596,19 @@ auto Parser::parseWhileExpr() -> ast::ExprPtr {
 auto Parser::isLetFunctionDefAhead() -> bool {
     // Note: some keywords can be used as function names (e.g. 'loop', 'where')
     auto nextType = peekNext().type;
-    bool isNameToken = nextType == TokenType::LowerIdent ||
+    bool isLowerName = nextType == TokenType::LowerIdent ||
                        nextType == TokenType::Loop ||
                        nextType == TokenType::Match || nextType == TokenType::SpliceIdent ||
                        nextType == TokenType::Plus || nextType == TokenType::Minus ||
                        nextType == TokenType::Star || nextType == TokenType::EqEq;
-    if (!isNameToken) return false;  // `let { ... }`, `let ( ... )`, `let [ ... ]` — destructuring
+    bool isUpperName = nextType == TokenType::UpperIdent;
+    if (!isLowerName && !isUpperName) return false;  // `let { ... }`, `let ( ... )`, `let [ ... ]`
+
+    // UpperIdent after `let` is always a zero-arg constant definition
+    // (`let MAX_RETRIES = 3`, `let DEFAULT_LEVEL = "info"`). UpperIdent can't
+    // be a variable-binding pattern in a let expression, so there's no
+    // ambiguity with the synthetic-MainBlock path.
+    if (isUpperName) return true;
 
     // Look further: is there a ( after the name? Or is it let name = expr (simple binding)?
     auto savedPos = m_pos;

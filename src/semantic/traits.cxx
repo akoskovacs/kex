@@ -44,6 +44,13 @@ auto TraitRegistry::satisfies(const TypePtr& type, const std::string& traitName)
         return satisfiesStructurally(type, traitName);
     }
 
+    // Any Optional type satisfies Optionable — Optional<TypeVar>, Optional<String>,
+    // etc. — regardless of inner type, since `.or(default)` only cares that the
+    // receiver is optional, not what T is.
+    if (traitName == "Optionable") {
+        if (std::holds_alternative<OptionalType>(type->kind)) return true;
+    }
+
     // Compound types recurse into their component types for Equatable/
     // Showable — ordering compound types isn't supported structurally
     // here, so Comparable doesn't get this treatment.

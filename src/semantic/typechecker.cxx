@@ -417,7 +417,12 @@ auto TypeChecker::bindPatternVars(const ast::Pattern& pat) -> void {
                 if (elem) bindPatternVars(*elem);
             }
         }
-        // LiteralPattern, WildcardPattern, RangePattern introduce nothing.
+        else if constexpr (std::is_same_v<T, ast::RangePattern>) {
+            // (x..y) in a match clause binds x and y as variables.
+            if (node.start) bindPatternVars(*node.start);
+            if (node.end) bindPatternVars(*node.end);
+        }
+        // LiteralPattern, WildcardPattern introduce nothing.
     }, pat.kind);
 }
 
@@ -664,7 +669,7 @@ auto TypeChecker::inferExpr(const ast::Expr& expr) -> TypePtr {
                 argTypes.push_back(arg ? inferExpr(*arg) : Type::unknown());
             }
             for (const auto& [_, arg] : node.namedArgs) {
-                if (arg) inferExpr(*arg);
+                argTypes.push_back(arg ? inferExpr(*arg) : Type::unknown());
             }
             if (node.block) {
                 inferExpr(**node.block);
@@ -684,7 +689,7 @@ auto TypeChecker::inferExpr(const ast::Expr& expr) -> TypePtr {
                 argTypes.push_back(arg ? inferExpr(*arg) : Type::unknown());
             }
             for (const auto& [_, arg] : node.namedArgs) {
-                if (arg) inferExpr(*arg);
+                argTypes.push_back(arg ? inferExpr(*arg) : Type::unknown());
             }
             if (node.block) {
                 inferExpr(**node.block);
@@ -735,9 +740,14 @@ auto TypeChecker::inferExpr(const ast::Expr& expr) -> TypePtr {
             return Type::tuple(std::move(types));
         }
         else if constexpr (std::is_same_v<T, ast::RangeExpr>) {
-            if (node.start) inferExpr(*node.start);
+            auto startType = node.start ? inferExpr(*node.start) : Type::unknown();
             if (node.end) inferExpr(*node.end);
-            return Type::named("Range", {Type::integer()});
+            // Infer element type from the start bound: Char ranges → Range<Char>,
+            // everything else → Range<Integer> (the common case).
+            auto* prim = std::get_if<PrimitiveType>(&startType->kind);
+            auto elemType = (prim && prim->kind == PrimitiveType::Char)
+                ? Type::charT() : Type::integer();
+            return Type::named("Range", {elemType});
         }
         else if constexpr (std::is_same_v<T, ast::IfExpr>) {
             if (node.condition) {
@@ -888,6 +898,10 @@ auto TypeChecker::inferBinaryOp(TokenType op, const TypePtr& left, const TypePtr
         auto* elemPrim = std::get_if<PrimitiveType>(&list->element->kind);
         return elemPrim && elemPrim->kind == PrimitiveType::Char;
     };
+    auto isChar = [](const TypePtr& t) {
+        auto* prim = std::get_if<PrimitiveType>(&t->kind);
+        return prim && prim->kind == PrimitiveType::Char;
+    };
     auto isFloat = [](const TypePtr& t) { return std::holds_alternative<SizedFloatType>(t->kind); };
     auto isIntegerLike = [](const TypePtr& t) {
         if (auto* prim = std::get_if<PrimitiveType>(&t->kind)) return prim->kind == PrimitiveType::Integer;
@@ -909,6 +923,10 @@ auto TypeChecker::inferBinaryOp(TokenType op, const TypePtr& left, const TypePtr
             if ((leftIsFloat || rightIsFloat) && (leftIsFloat || leftIsInt) && (rightIsFloat || rightIsInt))
                 return Type::float64();
             if (leftIsString && rightIsString)
+                return Type::string();
+            // String + Char, Char + String, Char + Char — all produce String
+            // (String = [Char], so appending a Char or two Chars is valid concatenation).
+            if ((leftIsString || isChar(left)) && (rightIsString || isChar(right)))
                 return Type::string();
             if (leftIsString || rightIsString) {
                 error(loc, "Cannot add " + typeToString(left) + " and " + typeToString(right));
@@ -1033,6 +1051,18 @@ auto TypeChecker::argMatchesParam(const TypePtr& argType, const TypePtr& paramTy
             }
         }
         return false;
+    }
+    // NamedType with type args — e.g. `Range<Number>` param vs `Range<Integer>` arg.
+    // Recurse into type arguments structurally so the inner types get the same
+    // trait-relaxation treatment (argMatchesParam, not typesEqual).
+    if (auto* paramNamed = std::get_if<NamedType>(&paramType->kind)) {
+        auto* argNamed = std::get_if<NamedType>(&argType->kind);
+        if (!argNamed || argNamed->name != paramNamed->name) return false;
+        if (argNamed->typeArgs.size() != paramNamed->typeArgs.size()) return false;
+        for (size_t i = 0; i < paramNamed->typeArgs.size(); i++) {
+            if (!argMatchesParam(argNamed->typeArgs[i], paramNamed->typeArgs[i])) return false;
+        }
+        return true;
     }
     // UnionType param (e.g. type alias `Level = :a | :b | :c`) — arg
     // matches if it matches any branch of the union.

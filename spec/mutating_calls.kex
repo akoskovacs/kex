@@ -1,3 +1,4 @@
+# kex: no-check
 # `!` mutating calls rebind a `var` binding to a new value; the underlying
 # value itself is never touched in place, and `let` bindings reject `!`.
 main do

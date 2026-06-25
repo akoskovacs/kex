@@ -39,7 +39,11 @@ auto Analyzer::bindPatternVars(const ast::Pattern& pat, SourceLocation loc) -> v
                 if (elem) bindPatternVars(*elem, loc);
             }
         }
-        // LiteralPattern, WildcardPattern, RangePattern introduce nothing.
+        else if constexpr (std::is_same_v<T, ast::RangePattern>) {
+            if (node.start) bindPatternVars(*node.start, loc);
+            if (node.end) bindPatternVars(*node.end, loc);
+        }
+        // LiteralPattern, WildcardPattern introduce nothing.
     }, pat.kind);
 }
 

@@ -1,1 +1,2 @@
-Parse error: spec/error_logical_keyword_removed.kex:6:16: runtime error: Undefined variable: and
+spec/error_logical_keyword_removed.kex:6:16: error: Undefined identifier: and
+Aborted: fix type errors before running (use --no-check to skip).

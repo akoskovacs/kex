@@ -36,6 +36,7 @@ end
 
 let withResult(r) = match r do |x|
   Ok(val) when val > 0 -> "ok-positive: ${val}"
+  Ok(_) -> "ok-other"
   Error(e) when x.ok? -> "unreachable"
   Error(e) -> "error: ${e}"
 end

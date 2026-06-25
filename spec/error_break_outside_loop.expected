@@ -1,1 +1,2 @@
-Parse error: spec/error_break_outside_loop.kex:2:1: runtime error: 'break' used outside a loop
+spec/error_break_outside_loop.kex:3:3: error: 'break' used outside a loop
+Aborted: fix type errors before running (use --no-check to skip).
