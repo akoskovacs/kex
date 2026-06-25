@@ -51,7 +51,10 @@ auto TypeChecker::check(const ast::Program& program,
         }, item);
     }
 
+    registerTypeAliases(program);
+
     // Register built-in types
+    // (done before registerDeclaredSignatures so annotation TypeExprs can resolve these names)
     m_globals.set("Int", Type::int64());
     m_globals.set("Integer", Type::integer());
     m_globals.set("Char", Type::charT());
@@ -70,6 +73,8 @@ auto TypeChecker::check(const ast::Program& program,
     m_globals.set("Float64", Type::float64());
     // Note: no "Float" entry — it's not a concrete Type, only a trait
     // name (TraitRegistry, phase 3), satisfied by Float32 and Float64.
+
+    registerDeclaredSignatures(program);
 
     for (const auto& item : program.items) {
         checkTopLevel(item);
@@ -105,6 +110,94 @@ auto TypeChecker::registerAdtsInModule(const ast::ModuleDef& mod) -> void {
                 registerAdtsInModule(*node);
             }
         }, item);
+    }
+}
+
+auto TypeChecker::typeDefToType(const ast::TypeDef& def) -> TypePtr {
+    if (!def.variants || def.variants->empty()) return Type::unknown();
+    // Build variant types, then fold into a union if more than one.
+    std::unordered_map<std::string, TypePtr> noGenerics;
+    std::vector<TypePtr> parts;
+    for (const auto& v : *def.variants) {
+        if (v) parts.push_back(resolveTypeExpr(*v, noGenerics));
+    }
+    if (parts.empty()) return Type::unknown();
+    if (parts.size() == 1) return parts[0];
+    return std::make_shared<Type>(Type{UnionType{std::move(parts)}});
+}
+
+auto TypeChecker::registerTypeAliases(const ast::Program& program) -> void {
+    for (const auto& item : program.items) {
+        std::visit([this](const auto& node) {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, std::unique_ptr<ast::TypeDef>>) {
+                if (!node->variants) return;
+                // Only register as alias if no variant is constructor-shaped.
+                for (const auto& v : *node->variants) {
+                    if (extractConstructorName(v)) return; // ADT, not an alias
+                }
+                m_typeAliases[node->name] = typeDefToType(*node);
+            } else if constexpr (std::is_same_v<T, std::unique_ptr<ast::ModuleDef>>) {
+                registerTypeAliasesInModule(*node);
+            }
+        }, item);
+    }
+}
+
+auto TypeChecker::registerTypeAliasesInModule(const ast::ModuleDef& mod) -> void {
+    for (const auto& item : mod.body) {
+        std::visit([this](const auto& node) {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, std::unique_ptr<ast::TypeDef>>) {
+                if (!node->variants) return;
+                for (const auto& v : *node->variants) {
+                    if (extractConstructorName(v)) return;
+                }
+                m_typeAliases[node->name] = typeDefToType(*node);
+            } else if constexpr (std::is_same_v<T, std::unique_ptr<ast::ModuleDef>>) {
+                registerTypeAliasesInModule(*node);
+            }
+        }, item);
+    }
+}
+
+auto TypeChecker::annotationToSignature(const ast::TypeAnnotation& ann) -> std::optional<Signature> {
+    if (!ann.type) return std::nullopt;
+    // Unroll `A -> B -> C` (right-nested FunctionType) into params=[A,B], result=C.
+    std::unordered_map<std::string, TypePtr> genericVars;
+    std::vector<TypePtr> params;
+    const ast::TypeExpr* cur = ann.type.get();
+    while (cur) {
+        if (auto* ft = std::get_if<ast::FunctionType>(&cur->kind)) {
+            params.push_back(ft->param ? resolveTypeExpr(*ft->param, genericVars) : Type::unknown());
+            cur = ft->result.get();
+        } else {
+            break;
+        }
+    }
+    TypePtr result = cur ? resolveTypeExpr(*cur, genericVars) : Type::unknown();
+    if (params.empty()) {
+        // Non-function annotation (e.g. `x : Int`) — treat as a zero-param
+        // constant whose type IS the annotated type.
+        return Signature{ann.name, {}, result};
+    }
+    return Signature{ann.name, std::move(params), result};
+}
+
+auto TypeChecker::registerDeclaredSignatures(const ast::Program& program) -> void {
+    for (const auto& item : program.items) {
+        if (auto* ann = std::get_if<std::unique_ptr<ast::TypeAnnotation>>(&item)) {
+            if (!*ann) continue;
+            auto sig = annotationToSignature(**ann);
+            if (!sig) continue;
+            // Declared annotation wins — stored first so checkFunctionDef
+            // can find it and verify the body against the declared type.
+            auto& sigs = m_userSignatures[(*ann)->name];
+            // Insert declared sig at front, replacing any same-arity inferred
+            // one that was somehow already there (shouldn't happen in pre-pass
+            // ordering, but guard for safety).
+            sigs.insert(sigs.begin(), std::move(*sig));
+        }
     }
 }
 
@@ -187,6 +280,9 @@ auto TypeChecker::resolveTypeExpr(const ast::TypeExpr& typeExpr,
             // (see check()'s comment) — so a param annotated `Float` means
             // "any T satisfying Float", same as an explicit constraint.
             if (m_traits.get(last)) return Type::constrained(last, last);
+            // User type alias (e.g. `type Level = :debug | :info | ...`)
+            auto aliasIt = m_typeAliases.find(last);
+            if (aliasIt != m_typeAliases.end()) return aliasIt->second;
             return Type::named(last);  // unregistered record/ADT name — nameable, not yet structurally known
         }
         else if constexpr (std::is_same_v<T, ast::GenericType>) {
@@ -310,16 +406,34 @@ auto TypeChecker::checkModule(const ast::ModuleDef& mod) -> void {
 }
 
 auto TypeChecker::checkFunctionDef(const ast::FunctionDef& def) -> void {
-    auto returnType = freshTypeVar();
+    // If a standalone type annotation declared this function's signature,
+    // use the declared param types and result as ground truth for the
+    // clause body check; otherwise infer freely.
+    auto* declared = [&]() -> const Signature* {
+        auto it = m_userSignatures.find(def.name);
+        if (it != m_userSignatures.end() && !it->second.empty()) return &it->second[0];
+        return nullptr;
+    }();
+
+    auto returnType = declared ? declared->result : freshTypeVar();
     defineVar(def.name, returnType);
 
     std::vector<Signature> signatures;
-    for (const auto& clause : def.clauses) {
+    for (size_t ci = 0; ci < def.clauses.size(); ci++) {
+        const auto& clause = def.clauses[ci];
         pushScope();
         std::unordered_map<std::string, TypePtr> genericVars;
         std::vector<TypePtr> paramTypes;
-        for (const auto& param : clause.params) {
-            TypePtr paramType = param.type ? resolveTypeExpr(**param.type, genericVars) : freshTypeVar();
+        for (size_t pi = 0; pi < clause.params.size(); pi++) {
+            const auto& param = clause.params[pi];
+            // Use declared param type if available and the annotation covers
+            // this position; fall back to inline annotation or fresh TypeVar.
+            TypePtr paramType;
+            if (declared && pi < declared->params.size() && !param.type) {
+                paramType = declared->params[pi];
+            } else {
+                paramType = param.type ? resolveTypeExpr(**param.type, genericVars) : freshTypeVar();
+            }
             paramTypes.push_back(paramType);
             if (param.name.has_value() && *param.name != "_") {
                 defineVar(*param.name, paramType);
@@ -329,6 +443,19 @@ auto TypeChecker::checkFunctionDef(const ast::FunctionDef& def) -> void {
             }
         }
         auto bodyType = inferBody(clause.body);
+        // Verify body matches declared return type (if declared and concrete).
+        // Use argMatchesParam (not typesEqual) to apply the same trait-family
+        // relaxations that call-site checking uses — e.g. Int and Integer are
+        // compatible, so `add : Int -> Int -> Int` with a body returning
+        // Integer (inferred from literal arithmetic) isn't a mismatch.
+        if (declared && !std::holds_alternative<TypeVar>(declared->result->kind) &&
+            !std::holds_alternative<UnknownType>(bodyType->kind) &&
+            !std::holds_alternative<TypeVar>(bodyType->kind) &&
+            !argMatchesParam(bodyType, declared->result)) {
+            error(def.location,
+                  "`" + def.name + "` declared to return " + typeToString(declared->result) +
+                  " but body returns " + typeToString(bodyType));
+        }
         popScope();
         signatures.push_back(Signature{def.name, std::move(paramTypes), bodyType});
     }
@@ -338,7 +465,15 @@ auto TypeChecker::checkFunctionDef(const ast::FunctionDef& def) -> void {
     // mis-count their arity, so they're checked (body inference still
     // runs above) but not registered for call-site checking.
     if (!m_inMakeBlock) {
-        m_userSignatures[def.name] = std::move(signatures);
+        // If a declared signature already exists, update its result type with
+        // the inferred one (keeping declared params) and keep one entry.
+        if (declared) {
+            auto& sigs = m_userSignatures[def.name];
+            // Replace the placeholder declared sig with the fully-checked one.
+            if (!signatures.empty()) sigs[0] = signatures[0];
+        } else {
+            m_userSignatures[def.name] = std::move(signatures);
+        }
     }
 }
 
@@ -502,11 +637,13 @@ auto TypeChecker::inferExpr(const ast::Expr& expr) -> TypePtr {
             for (const auto& elem : node.elements) {
                 if (elem) {
                     auto t = inferExpr(*elem);
-                    if (std::holds_alternative<UnknownType>(elemType->kind)) {
-                        elemType = t;
-                    } else if (!typesEqual(elemType, t) &&
-                               !std::holds_alternative<UnknownType>(t->kind) &&
-                               !std::holds_alternative<TypeVar>(t->kind)) {
+                    bool elemPermissive = std::holds_alternative<UnknownType>(elemType->kind) ||
+                                         std::holds_alternative<TypeVar>(elemType->kind);
+                    bool tPermissive = std::holds_alternative<UnknownType>(t->kind) ||
+                                       std::holds_alternative<TypeVar>(t->kind);
+                    if (elemPermissive) {
+                        elemType = t; // adopt the concrete type if we have one
+                    } else if (!tPermissive && !typesEqual(elemType, t)) {
                         error(expr.location,
                               "List elements must be the same type. Expected " +
                               typeToString(elemType) + ", got " + typeToString(t));
@@ -805,6 +942,14 @@ auto TypeChecker::argMatchesParam(const TypePtr& argType, const TypePtr& paramTy
     if (auto* paramOpt = std::get_if<OptionalType>(&paramType->kind)) {
         auto* argOpt = std::get_if<OptionalType>(&argType->kind);
         return argOpt && argMatchesParam(argOpt->inner, paramOpt->inner);
+    }
+    // UnionType param (e.g. type alias `Level = :a | :b | :c`) — arg
+    // matches if it matches any branch of the union.
+    if (auto* paramUnion = std::get_if<UnionType>(&paramType->kind)) {
+        for (const auto& member : paramUnion->members) {
+            if (member && argMatchesParam(argType, member)) return true;
+        }
+        return false;
     }
 
     return typesEqual(argType, paramType);

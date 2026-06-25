@@ -140,8 +140,8 @@ int main() {
             repl.eval("let nums = [1, 2, 3, 4, 5]");
             assertEqual(repl.eval("nums.length"), std::string("5"));
             assertEqual(repl.eval("nums.sum"), std::string("15"));
-            assertEqual(repl.eval("nums.first"), std::string("1"));
-            assertEqual(repl.eval("nums.last"), std::string("5"));
+            assertEqual(repl.eval("nums.first"), std::string("Just(1)"));
+            assertEqual(repl.eval("nums.last"), std::string("Just(5)"));
         });
 
         it("maps and filters", []() {

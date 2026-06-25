@@ -210,10 +210,11 @@ auto printUsage(const char* progName) -> void {
     std::cerr << "Usage: " << progName << " [options] <file.kex>\n"
               << "\n"
               << "Options:\n"
-              << "  -r, --run       Execute the program\n"
+              << "  -r, --run       Execute the program (default)\n"
+              << "  -s, --strict    Run semantic check before executing; abort on errors\n"
               << "  -l, --lex       Print token stream\n"
               << "  -p, --parse     Print AST\n"
-              << "  -c, --check     Run semantic analysis\n"
+              << "  -c, --check     Run semantic analysis only\n"
               << "  -h, --help      Show this help\n"
               << "  -v, --version   Show version\n";
 }
@@ -225,6 +226,7 @@ auto printVersion() -> void {
 int main(int argc, char* argv[]) {
     static struct option longOptions[] = {
         {"run",     no_argument, nullptr, 'r'},
+        {"strict",  no_argument, nullptr, 's'},
         {"lex",     no_argument, nullptr, 'l'},
         {"parse",   no_argument, nullptr, 'p'},
         {"check",   no_argument, nullptr, 'c'},
@@ -234,11 +236,13 @@ int main(int argc, char* argv[]) {
     };
 
     std::string mode = "run";
+    bool strict = false;
     int opt;
 
-    while ((opt = getopt_long(argc, argv, "rlcphv", longOptions, nullptr)) != -1) {
+    while ((opt = getopt_long(argc, argv, "rslcphv", longOptions, nullptr)) != -1) {
         switch (opt) {
             case 'r': mode = "run"; break;
+            case 's': strict = true; break;
             case 'l': mode = "lex"; break;
             case 'p': mode = "parse"; break;
             case 'c': mode = "check"; break;
@@ -523,6 +527,22 @@ int main(int argc, char* argv[]) {
         if (mode == "parse") {
             printAst(program);
             return 0;
+        }
+
+        if (mode == "run" && strict) {
+            kex::semantic::Analyzer analyzer;
+            bool ok = analyzer.analyze(program);
+            for (const auto& diag : analyzer.diagnostics()) {
+                auto prefix = diag.level == kex::semantic::Diagnostic::Level::Error
+                    ? "error" : "warning";
+                std::cerr << diag.location.file << ":" << diag.location.line << ":"
+                          << diag.location.column << ": " << prefix << ": "
+                          << diag.message << "\n";
+            }
+            if (!ok) {
+                std::cerr << "Aborted: fix type errors before running with --strict.\n";
+                return 1;
+            }
         }
 
         if (mode == "run") {

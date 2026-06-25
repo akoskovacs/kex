@@ -21,28 +21,55 @@ auto Evaluator::registerListBuiltins() -> void {
     };
 
     // Helper: get elements from a list or range
-    auto getElements = [&rangeToList](const ValuePtr& val) -> std::vector<ValuePtr> {
+    auto getElements = [rangeToList](const ValuePtr& val) -> std::vector<ValuePtr> {
         if (auto* list = std::get_if<ListValue>(&val->data)) return list->elements;
         if (auto* range = std::get_if<RangeValue>(&val->data)) return rangeToList(*range);
         return {};
     };
 
-    // to(Type) — universal conversion
-    reg("to", [&rangeToList](std::vector<ValuePtr> args) -> ValuePtr {
+    // to(Type) — universal conversion; Type is either AtomValue (bare UpperIdent
+    // not in env) or RecordValue{} placeholder (e.g. Integer, Float, String,
+    // which are registered as empty-record namespace sentinels in the env).
+    reg("to", [rangeToList](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.size() < 2) return Value::none();
-        // args[0] = this (value to convert), args[1] = target type identifier
-        // For now, check by UpperIdent name passed as a constructor/identifier
-        auto* targetId = std::get_if<StringValue>(&args[1]->data);
-        // If target is a bare UpperIdent, it gets evaluated as an identifier
-        // For now handle common conversions directly
+        std::string targetName;
+        if (auto* a = std::get_if<AtomValue>(&args[1]->data))
+            targetName = a->name;
+        else if (auto* r = std::get_if<RecordValue>(&args[1]->data))
+            targetName = r->typeName;
 
-        // Range/Stream/List -> List
-        if (auto* range = std::get_if<RangeValue>(&args[0]->data)) {
-            return Value::list(rangeToList(*range));
+        if (targetName == "Integer") {
+            if (std::holds_alternative<IntValue>(args[0]->data) ||
+                std::holds_alternative<BigIntValue>(args[0]->data))
+                return args[0];
+            if (auto* str = std::get_if<StringValue>(&args[0]->data)) {
+                try { return Value::integer(std::stoll(str->value)); } catch (...) {}
+            }
+            if (auto* f = std::get_if<FloatValue>(&args[0]->data))
+                return Value::integer(static_cast<int64_t>(f->value));
+            return Value::none();
         }
+        if (targetName == "Float") {
+            if (auto* str = std::get_if<StringValue>(&args[0]->data)) {
+                try { return Value::floating(std::stod(str->value)); } catch (...) {}
+            }
+            if (auto i = asInteger(args[0])) return Value::floating(i->get_d());
+            return Value::none();
+        }
+        if (targetName == "String") {
+            return Value::string(args[0]->toString());
+        }
+        if (targetName == "List") {
+            if (auto* range = std::get_if<RangeValue>(&args[0]->data))
+                return Value::list(rangeToList(*range));
+            if (std::holds_alternative<ListValue>(args[0]->data)) return args[0];
+        }
+
+        // Range -> List (legacy: .to([]) or untyped)
+        if (auto* range = std::get_if<RangeValue>(&args[0]->data))
+            return Value::list(rangeToList(*range));
         if (std::holds_alternative<ListValue>(args[0]->data)) return args[0];
 
-        // Anything -> String
         return Value::string(args[0]->toString());
     });
 
@@ -76,7 +103,7 @@ auto Evaluator::registerListBuiltins() -> void {
         return args[0];
     });
 
-    reg("map", [this, &getElements](std::vector<ValuePtr> args) -> ValuePtr {
+    reg("map", [this, getElements](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.size() < 2) return Value::list({});
 
         // Lazy map on streams
@@ -104,7 +131,7 @@ auto Evaluator::registerListBuiltins() -> void {
         return Value::list(std::move(result));
     });
 
-    reg("filter", [this, &getElements](std::vector<ValuePtr> args) -> ValuePtr {
+    reg("filter", [this, getElements](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.size() < 2) return Value::list({});
 
         // Lazy filter on streams — returns a new stream that skips non-matching
@@ -145,7 +172,7 @@ auto Evaluator::registerListBuiltins() -> void {
         return Value::list(std::move(result));
     });
 
-    reg("reject", [this, &getElements](std::vector<ValuePtr> args) -> ValuePtr {
+    reg("reject", [this, getElements](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.size() < 2) return Value::list({});
         auto elems = getElements(args[0]);
         auto* fn = std::get_if<FunctionValue>(&args[1]->data);
@@ -159,7 +186,7 @@ auto Evaluator::registerListBuiltins() -> void {
         return Value::list(std::move(result));
     });
 
-    reg("reduce", [this, &getElements](std::vector<ValuePtr> args) -> ValuePtr {
+    reg("reduce", [this, getElements](std::vector<ValuePtr> args) -> ValuePtr {
         // reduce(list, initial, fn)
         if (args.size() < 3) return Value::none();
         auto elems = getElements(args[0]);
@@ -173,7 +200,7 @@ auto Evaluator::registerListBuiltins() -> void {
         return acc;
     });
 
-    reg("each", [this, &getElements](std::vector<ValuePtr> args) -> ValuePtr {
+    reg("each", [this, getElements](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.size() < 2) return Value::none();
         auto* fn = std::get_if<FunctionValue>(&args[1]->data);
         if (!fn || !fn->native) return Value::none();
@@ -194,7 +221,7 @@ auto Evaluator::registerListBuiltins() -> void {
         return Value::none();
     });
 
-    reg("find", [this, &getElements](std::vector<ValuePtr> args) -> ValuePtr {
+    reg("find", [this, getElements](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.size() < 2) return Value::none();
         auto elems = getElements(args[0]);
         auto* fn = std::get_if<FunctionValue>(&args[1]->data);
@@ -229,16 +256,25 @@ auto Evaluator::registerListBuiltins() -> void {
         if (args.empty()) return Value::none();
         if (auto* list = std::get_if<ListValue>(&args[0]->data)) {
             if (list->elements.empty()) return Value::none();
-            return list->elements[0];
+            return Value::record("Just", {{"0", list->elements[0]}});
         }
         return Value::none();
+    });
+
+    reg("rest", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.empty()) return Value::list({});
+        if (auto* list = std::get_if<ListValue>(&args[0]->data)) {
+            if (list->elements.size() <= 1) return Value::list({});
+            return Value::list({list->elements.begin() + 1, list->elements.end()});
+        }
+        return Value::list({});
     });
 
     reg("last", [](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.empty()) return Value::none();
         if (auto* list = std::get_if<ListValue>(&args[0]->data)) {
             if (list->elements.empty()) return Value::none();
-            return list->elements.back();
+            return Value::record("Just", {{"0", list->elements.back()}});
         }
         return Value::none();
     });
@@ -300,7 +336,7 @@ auto Evaluator::registerListBuiltins() -> void {
         return Value::list(std::move(result));
     });
 
-    reg("any?", [this, &getElements](std::vector<ValuePtr> args) -> ValuePtr {
+    reg("any?", [this, getElements](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.size() < 2) return Value::boolean(false);
         auto elems = getElements(args[0]);
         auto* fn = std::get_if<FunctionValue>(&args[1]->data);
@@ -311,7 +347,7 @@ auto Evaluator::registerListBuiltins() -> void {
         return Value::boolean(false);
     });
 
-    reg("all?", [this, &getElements](std::vector<ValuePtr> args) -> ValuePtr {
+    reg("all?", [this, getElements](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.size() < 2) return Value::boolean(true);
         auto elems = getElements(args[0]);
         auto* fn = std::get_if<FunctionValue>(&args[1]->data);
@@ -322,7 +358,7 @@ auto Evaluator::registerListBuiltins() -> void {
         return Value::boolean(true);
     });
 
-    reg("count", [this, &getElements](std::vector<ValuePtr> args) -> ValuePtr {
+    reg("count", [this, getElements](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.empty()) return Value::integer(0);
         auto elems = getElements(args[0]);
         if (args.size() < 2) return Value::integer(static_cast<int64_t>(elems.size()));
@@ -355,7 +391,7 @@ auto Evaluator::registerListBuiltins() -> void {
         return Value::list(std::move(sorted));
     });
 
-    reg("min", [&getElements](std::vector<ValuePtr> args) -> ValuePtr {
+    reg("min", [getElements](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.empty()) return Value::none();
         auto elems = getElements(args[0]);
         if (elems.empty()) return Value::none();
@@ -371,7 +407,7 @@ auto Evaluator::registerListBuiltins() -> void {
         return result;
     });
 
-    reg("max", [&getElements](std::vector<ValuePtr> args) -> ValuePtr {
+    reg("max", [getElements](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.empty()) return Value::none();
         auto elems = getElements(args[0]);
         if (elems.empty()) return Value::none();
@@ -387,7 +423,7 @@ auto Evaluator::registerListBuiltins() -> void {
         return result;
     });
 
-    reg("sum", [&getElements](std::vector<ValuePtr> args) -> ValuePtr {
+    reg("sum", [getElements](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.empty()) return Value::integer(0);
         auto elems = getElements(args[0]);
         int64_t total = 0;

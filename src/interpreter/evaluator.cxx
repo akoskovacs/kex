@@ -217,13 +217,14 @@ auto Evaluator::execFunctionDef(const ast::FunctionDef& def, const std::string& 
         regName = typeScope + "::" + def.name;
     }
 
-    auto& funcDefs = m_functionDefs[regName];
-    funcDefs.push_back(&def);
+    m_functionDefs[regName].push_back(&def);
 
+    // Capture regName by value so the closure always looks up the current
+    // vector from the map — avoids a dangling pointer when unordered_map
+    // rehashes after a new key is inserted for a different function.
     auto funcValue = std::make_shared<Value>();
-    auto* defsPtr = &funcDefs;
-    funcValue->data = FunctionValue{def.name, [this, defsPtr](std::vector<ValuePtr> args) -> ValuePtr {
-        for (const auto* funcDef : *defsPtr) {
+    funcValue->data = FunctionValue{def.name, [this, regName](std::vector<ValuePtr> args) -> ValuePtr {
+        for (const auto* funcDef : m_functionDefs.at(regName)) {
             for (const auto& clause : funcDef->clauses) {
                 pushEnv();
                 bool matched = true;

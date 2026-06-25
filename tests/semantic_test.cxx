@@ -1039,6 +1039,68 @@ int main() {
         });
     });
 
+    describe("Semantic — standalone type annotations", []() {
+        it("accepts a function whose body matches the declared return type", []() {
+            assertTrue(noErrors(
+                "add : Int -> Int -> Int\n"
+                "let add(a, b) = a + b\n"
+                "main do\n"
+                "  IO.printLine(add(1, 2))\n"
+                "end\n"
+            ));
+        });
+
+        it("rejects a function whose body return type contradicts the annotation", []() {
+            assertTrue(hasError(
+                "add : Int -> Int -> String\n"
+                "let add(a, b) = a + b\n"
+                "main do\n"
+                "  IO.printLine(add(1, 2))\n"
+                "end\n"
+            ));
+        });
+
+        it("uses declared param types for call checking even without inline annotations", []() {
+            // `add` has no inline type annotations on its params, but the
+            // standalone annotation supplies them — passing a String should error.
+            assertTrue(hasError(
+                "add : Int -> Int -> Int\n"
+                "let add(a, b) = a + b\n"
+                "main do\n"
+                "  add(\"x\", 2)\n"
+                "end\n"
+            ));
+        });
+    });
+
+    describe("Semantic — type aliases", []() {
+        it("resolves a type alias in a param annotation", []() {
+            // `type Level = :debug | :info` should make `level: Level`
+            // accept an Atom argument without a type error.
+            assertTrue(noErrors(
+                "type Level = :debug | :info | :warn | :error\n"
+                "let log(level: Level, msg: String) do\n"
+                "  IO.printLine(msg)\n"
+                "end\n"
+                "main do\n"
+                "  log(:debug, \"hello\")\n"
+                "end\n"
+            ));
+        });
+
+        it("still rejects a clearly wrong type for an aliased param", []() {
+            assertTrue(hasError(
+                "type Level = :debug | :info\n"
+                "let log(level: Level, msg: String) do\n"
+                "  IO.printLine(msg)\n"
+                "end\n"
+                "main do\n"
+                "  log(42, \"hello\")\n"
+                "end\n"
+            ));
+        });
+    });
+
     describe("Semantic — top-level value binding scope", []() {
         it("top-level `let x = expr` is visible to subsequent top-level bindings", []() {
             assertTrue(noErrors(

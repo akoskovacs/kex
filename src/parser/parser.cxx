@@ -1972,7 +1972,19 @@ auto Parser::parseMapOrBlock() -> ast::ExprPtr {
         std::vector<ast::MapEntry> entries;
         do {
             skipNewlines();
-            auto key = parseExpr();
+            ast::ExprPtr key;
+            // `ident:` sugar — bare lowercase identifier used as an atom key,
+            // same as Elixir's `%{host: "localhost"}` meaning `%{:host => ...}`.
+            // parseExpr() would treat it as a variable lookup instead.
+            if (check(TokenType::LowerIdent) && peekNext().type == TokenType::Colon) {
+                auto keyLoc = currentLocation();
+                auto atomName = advance().value; // consume ident
+                key = std::make_unique<ast::Expr>();
+                key->location = keyLoc;
+                key->kind = ast::AtomLiteral{atomName};
+            } else {
+                key = parseExpr();
+            }
             expect(TokenType::Colon, "Expected ':' in map entry");
             auto value = parseExpr();
             entries.push_back(ast::MapEntry{std::move(key), std::move(value)});

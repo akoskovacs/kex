@@ -28,6 +28,19 @@ private:
     // work the same way `m_globals` already does.
     auto registerAdt(const ast::TypeDef& def) -> void;
     auto registerAdtsInModule(const ast::ModuleDef& mod) -> void;
+
+    // Type alias registry: `type X = <type_expr>` where the RHS is not
+    // constructor-shaped (no UpperIdent variants) — the aliased type is
+    // expanded inline whenever X appears in a type annotation.
+    auto registerTypeAliases(const ast::Program& program) -> void;
+    auto registerTypeAliasesInModule(const ast::ModuleDef& mod) -> void;
+    auto typeDefToType(const ast::TypeDef& def) -> TypePtr;
+
+    // Standalone type signatures (`fact : Integer -> Integer`) — registered
+    // before function bodies are checked so the annotation acts as a declared
+    // contract rather than competing with body inference.
+    auto registerDeclaredSignatures(const ast::Program& program) -> void;
+    auto annotationToSignature(const ast::TypeAnnotation& ann) -> std::optional<Signature>;
     auto checkMatchExhaustiveness(const ast::MatchExpr& node, SourceLocation loc) -> void;
 
     // Defines every variable a pattern introduces (VarPattern, shorthand
@@ -87,6 +100,9 @@ private:
     // typeName -> constructor names; constructorName -> owning typeName.
     std::unordered_map<std::string, std::vector<std::string>> m_adtVariants;
     std::unordered_map<std::string, std::string> m_adtOfConstructor;
+
+    // Type alias map — populated before function bodies are checked.
+    std::unordered_map<std::string, TypePtr> m_typeAliases;
 
     // Per-clause signatures for top-level/module-level user functions,
     // built as each FunctionDef is checked — so a call to a function

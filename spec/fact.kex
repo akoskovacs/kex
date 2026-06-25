@@ -1,0 +1,12 @@
+fact : Integer -> Integer
+let fact(1) = 1
+let fact(n) = n * fact(n - 1)
+
+foul showFactorial(n: Integer) do
+  IO.printLine("${n}! = ${fact(n)}")
+end
+
+main(args) do
+  let max = args.first.or("50").to(Integer)
+  (1..max).each { |n| showFactorial(n) }
+end
