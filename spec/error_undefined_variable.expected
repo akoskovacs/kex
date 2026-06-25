@@ -1,2 +1,2 @@
-before
-Parse error: spec/error_undefined_variable.kex:4:16: runtime error: Undefined variable: doesNotExist
+spec/error_undefined_variable.kex:4:16: error: Undefined identifier: doesNotExist
+Aborted: fix type errors before running (use --no-check to skip).

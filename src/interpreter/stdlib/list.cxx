@@ -3,7 +3,6 @@
 
 namespace kex::interpreter {
 
-// List operations (UFCS: first arg is the list/range).
 auto Evaluator::registerListBuiltins() -> void {
     auto reg = [this](const std::string& name, NativeFunc fn) {
         auto val = std::make_shared<Value>();
@@ -11,50 +10,64 @@ auto Evaluator::registerListBuiltins() -> void {
         m_globalEnv->define(name, val);
     };
 
-    // Helper: expand a Range to a list for operations
+    // Captured by value in every lambda below — rangeToList and getElements
+    // are local stack variables that vanish when registerListBuiltins returns.
+    // All lambdas that need them must capture by value, not by reference.
     auto rangeToList = [](const RangeValue& r) -> std::vector<ValuePtr> {
         std::vector<ValuePtr> elems;
-        for (int64_t i = r.start; i <= r.end; i++) {
-            elems.push_back(Value::integer(i));
-        }
+        for (int64_t i = r.start; i <= r.end; i++)
+            elems.push_back(r.isChar ? Value::character(static_cast<char>(i))
+                                     : Value::integer(i));
         return elems;
     };
 
-    // Helper: get elements from a list or range
-    auto getElements = [&rangeToList](const ValuePtr& val) -> std::vector<ValuePtr> {
+    auto getElements = [rangeToList](const ValuePtr& val) -> std::vector<ValuePtr> {
         if (auto* list = std::get_if<ListValue>(&val->data)) return list->elements;
         if (auto* range = std::get_if<RangeValue>(&val->data)) return rangeToList(*range);
         return {};
     };
 
-    // to(Type) — universal conversion
-    reg("to", [&rangeToList](std::vector<ValuePtr> args) -> ValuePtr {
+    // to(Type) — universal conversion.
+    // `Integer` in the env is a RecordValue{"Integer",{}} namespace sentinel,
+    // not an AtomValue, so we check both.
+    reg("to", [rangeToList](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.size() < 2) return Value::none();
-        // args[0] = this (value to convert), args[1] = target type identifier
-        // For now, check by UpperIdent name passed as a constructor/identifier
-        auto* targetId = std::get_if<StringValue>(&args[1]->data);
-        // If target is a bare UpperIdent, it gets evaluated as an identifier
-        // For now handle common conversions directly
+        std::string targetName;
+        if (auto* a = std::get_if<AtomValue>(&args[1]->data))
+            targetName = a->name;
+        else if (auto* r = std::get_if<RecordValue>(&args[1]->data))
+            targetName = r->typeName;
 
-        // Range/Stream/List -> List
-        if (auto* range = std::get_if<RangeValue>(&args[0]->data)) {
-            return Value::list(rangeToList(*range));
+        if (targetName == "Integer") {
+            if (std::holds_alternative<IntValue>(args[0]->data) ||
+                std::holds_alternative<BigIntValue>(args[0]->data))
+                return args[0];
+            if (auto* str = std::get_if<StringValue>(&args[0]->data)) {
+                try { return Value::integer(std::stoll(str->value)); } catch (...) {}
+            }
+            if (auto* f = std::get_if<FloatValue>(&args[0]->data))
+                return Value::integer(static_cast<int64_t>(f->value));
+            return Value::none();
         }
-        if (std::holds_alternative<ListValue>(args[0]->data)) return args[0];
-
-        // Anything -> String
-        return Value::string(args[0]->toString());
-    });
-
-    reg("length", [](std::vector<ValuePtr> args) -> ValuePtr {
-        if (args.empty()) return Value::integer(0);
-        if (auto* list = std::get_if<ListValue>(&args[0]->data))
-            return Value::integer(static_cast<int64_t>(list->elements.size()));
-        if (auto* str = std::get_if<StringValue>(&args[0]->data))
-            return Value::integer(static_cast<int64_t>(str->value.size()));
+        if (targetName == "Float") {
+            if (auto* str = std::get_if<StringValue>(&args[0]->data)) {
+                try { return Value::floating(std::stod(str->value)); } catch (...) {}
+            }
+            if (auto i = asInteger(args[0])) return Value::floating(i->get_d());
+            return Value::none();
+        }
+        if (targetName == "String") {
+            return Value::string(args[0]->toString());
+        }
+        if (targetName == "List") {
+            if (auto* range = std::get_if<RangeValue>(&args[0]->data))
+                return Value::list(rangeToList(*range));
+            if (std::holds_alternative<ListValue>(args[0]->data)) return args[0];
+        }
         if (auto* range = std::get_if<RangeValue>(&args[0]->data))
-            return Value::integer(range->end - range->start + 1);
-        return Value::integer(0);
+            return Value::list(rangeToList(*range));
+        if (std::holds_alternative<ListValue>(args[0]->data)) return args[0];
+        return Value::string(args[0]->toString());
     });
 
     reg("empty?", [](std::vector<ValuePtr> args) -> ValuePtr {
@@ -76,10 +89,8 @@ auto Evaluator::registerListBuiltins() -> void {
         return args[0];
     });
 
-    reg("map", [this, &getElements](std::vector<ValuePtr> args) -> ValuePtr {
+    reg("map", [this, getElements](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.size() < 2) return Value::list({});
-
-        // Lazy map on streams
         if (auto* stream = std::get_if<StreamValue>(&args[0]->data)) {
             auto* fn = std::get_if<FunctionValue>(&args[1]->data);
             if (!fn || !fn->native) return Value::list({});
@@ -92,22 +103,16 @@ auto Evaluator::registerListBuiltins() -> void {
             }, 0};
             return newStream;
         }
-
         auto elems = getElements(args[0]);
         auto* fn = std::get_if<FunctionValue>(&args[1]->data);
         if (!fn || !fn->native) return Value::list({});
-
         std::vector<ValuePtr> result;
-        for (const auto& elem : elems) {
-            result.push_back(fn->native({elem}));
-        }
+        for (const auto& elem : elems) result.push_back(fn->native({elem}));
         return Value::list(std::move(result));
     });
 
-    reg("filter", [this, &getElements](std::vector<ValuePtr> args) -> ValuePtr {
+    reg("filter", [this, getElements](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.size() < 2) return Value::list({});
-
-        // Lazy filter on streams — returns a new stream that skips non-matching
         if (auto* stream = std::get_if<StreamValue>(&args[0]->data)) {
             auto* fn = std::get_if<FunctionValue>(&args[1]->data);
             if (!fn || !fn->native) return Value::list({});
@@ -116,10 +121,7 @@ auto Evaluator::registerListBuiltins() -> void {
             auto filterFn = fn->native;
             auto newStream = std::make_shared<Value>();
             newStream->data = StreamValue{[gen, offset, filterFn](int64_t index) -> ValuePtr {
-                // Walk forward through the source stream to find the nth matching element
-                int64_t found = 0;
-                int64_t i = 0;
-                int64_t maxSearch = index * 100 + 1000; // safety limit
+                int64_t found = 0, i = 0, maxSearch = index * 100 + 1000;
                 while (found <= index && i < maxSearch) {
                     auto val = gen(offset + i);
                     if (filterFn({val})->isTrue()) {
@@ -132,77 +134,58 @@ auto Evaluator::registerListBuiltins() -> void {
             }, 0};
             return newStream;
         }
-
         auto elems = getElements(args[0]);
         auto* fn = std::get_if<FunctionValue>(&args[1]->data);
         if (!fn || !fn->native) return Value::list({});
-
         std::vector<ValuePtr> result;
         for (const auto& elem : elems) {
-            auto val = fn->native({elem});
-            if (val->isTrue()) result.push_back(elem);
+            if (fn->native({elem})->isTrue()) result.push_back(elem);
         }
         return Value::list(std::move(result));
     });
 
-    reg("reject", [this, &getElements](std::vector<ValuePtr> args) -> ValuePtr {
+    reg("reject", [this, getElements](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.size() < 2) return Value::list({});
         auto elems = getElements(args[0]);
         auto* fn = std::get_if<FunctionValue>(&args[1]->data);
         if (!fn || !fn->native) return Value::list({});
-
         std::vector<ValuePtr> result;
         for (const auto& elem : elems) {
-            auto val = fn->native({elem});
-            if (!val->isTrue()) result.push_back(elem);
+            if (!fn->native({elem})->isTrue()) result.push_back(elem);
         }
         return Value::list(std::move(result));
     });
 
-    reg("reduce", [this, &getElements](std::vector<ValuePtr> args) -> ValuePtr {
-        // reduce(list, initial, fn)
+    reg("reduce", [this, getElements](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.size() < 3) return Value::none();
         auto elems = getElements(args[0]);
         auto* fn = std::get_if<FunctionValue>(&args[2]->data);
         if (!fn || !fn->native) return args[1];
-
         auto acc = args[1];
-        for (const auto& elem : elems) {
-            acc = fn->native({acc, elem});
-        }
+        for (const auto& elem : elems) acc = fn->native({acc, elem});
         return acc;
     });
 
-    reg("each", [this, &getElements](std::vector<ValuePtr> args) -> ValuePtr {
+    reg("each", [this, getElements](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.size() < 2) return Value::none();
         auto* fn = std::get_if<FunctionValue>(&args[1]->data);
         if (!fn || !fn->native) return Value::none();
-
-        // Map.each — yields (key, value) pairs, e.g.
-        // `someMap.each do |key, value| ... end`.
         if (auto* map = std::get_if<MapValue>(&args[0]->data)) {
-            for (const auto& [k, v] : map->entries) {
-                fn->native({k, v});
-            }
+            for (const auto& [k, v] : map->entries) fn->native({k, v});
             return Value::none();
         }
-
         auto elems = getElements(args[0]);
-        for (const auto& elem : elems) {
-            fn->native({elem});
-        }
+        for (const auto& elem : elems) fn->native({elem});
         return Value::none();
     });
 
-    reg("find", [this, &getElements](std::vector<ValuePtr> args) -> ValuePtr {
+    reg("find", [this, getElements](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.size() < 2) return Value::none();
         auto elems = getElements(args[0]);
         auto* fn = std::get_if<FunctionValue>(&args[1]->data);
         if (!fn || !fn->native) return Value::none();
-
         for (const auto& elem : elems) {
-            auto val = fn->native({elem});
-            if (val->isTrue()) return elem;
+            if (fn->native({elem})->isTrue()) return elem;
         }
         return Value::none();
     });
@@ -211,12 +194,10 @@ auto Evaluator::registerListBuiltins() -> void {
         if (args.empty()) return Value::string("");
         auto* list = std::get_if<ListValue>(&args[0]->data);
         if (!list) return Value::string("");
-
-        std::string sep = "";
+        std::string sep;
         if (args.size() >= 2) {
             if (auto* s = std::get_if<StringValue>(&args[1]->data)) sep = s->value;
         }
-
         std::string result;
         for (size_t i = 0; i < list->elements.size(); i++) {
             if (i > 0) result += sep;
@@ -229,101 +210,42 @@ auto Evaluator::registerListBuiltins() -> void {
         if (args.empty()) return Value::none();
         if (auto* list = std::get_if<ListValue>(&args[0]->data)) {
             if (list->elements.empty()) return Value::none();
-            return list->elements[0];
+            return Value::record("Just", {{"0", list->elements[0]}});
         }
         return Value::none();
+    });
+
+    reg("rest", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.empty()) return Value::list({});
+        if (auto* list = std::get_if<ListValue>(&args[0]->data)) {
+            if (list->elements.size() <= 1) return Value::list({});
+            return Value::list({list->elements.begin() + 1, list->elements.end()});
+        }
+        return Value::list({});
     });
 
     reg("last", [](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.empty()) return Value::none();
         if (auto* list = std::get_if<ListValue>(&args[0]->data)) {
             if (list->elements.empty()) return Value::none();
-            return list->elements.back();
+            return Value::record("Just", {{"0", list->elements.back()}});
         }
         return Value::none();
     });
 
-    reg("size", [](std::vector<ValuePtr> args) -> ValuePtr {
+    // count([X]) -> Integer           — element count
+    // count(String) -> Integer        — character count
+    // count(Map) -> Integer           — entry count
+    // count(Range) -> Integer         — range size
+    // count([X], X->Bool) -> Integer  — filtered count
+    reg("count", [this, getElements](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.empty()) return Value::integer(0);
-        if (auto* list = std::get_if<ListValue>(&args[0]->data))
-            return Value::integer(static_cast<int64_t>(list->elements.size()));
+        if (auto* str = std::get_if<StringValue>(&args[0]->data))
+            return Value::integer(static_cast<int64_t>(str->value.size()));
         if (auto* map = std::get_if<MapValue>(&args[0]->data))
             return Value::integer(static_cast<int64_t>(map->entries.size()));
-        return Value::integer(0);
-    });
-
-    reg("take", [](std::vector<ValuePtr> args) -> ValuePtr {
-        if (args.size() < 2) return Value::list({});
-        auto* list = std::get_if<ListValue>(&args[0]->data);
-        auto* n = std::get_if<IntValue>(&args[1]->data);
-        if (!list || !n) return Value::list({});
-        auto count = std::min(static_cast<size_t>(n->value), list->elements.size());
-        std::vector<ValuePtr> result(list->elements.begin(), list->elements.begin() + count);
-        return Value::list(std::move(result));
-    });
-
-    reg("drop", [](std::vector<ValuePtr> args) -> ValuePtr {
-        if (args.size() < 2) return Value::list({});
-        auto* list = std::get_if<ListValue>(&args[0]->data);
-        auto* n = std::get_if<IntValue>(&args[1]->data);
-        if (!list || !n) return Value::list({});
-        auto skip = std::min(static_cast<size_t>(n->value), list->elements.size());
-        std::vector<ValuePtr> result(list->elements.begin() + skip, list->elements.end());
-        return Value::list(std::move(result));
-    });
-
-    reg("zip", [](std::vector<ValuePtr> args) -> ValuePtr {
-        if (args.size() < 2) return Value::list({});
-        auto* a = std::get_if<ListValue>(&args[0]->data);
-        auto* b = std::get_if<ListValue>(&args[1]->data);
-        if (!a || !b) return Value::list({});
-        auto len = std::min(a->elements.size(), b->elements.size());
-        std::vector<ValuePtr> result;
-        for (size_t i = 0; i < len; i++) {
-            result.push_back(Value::tuple({a->elements[i], b->elements[i]}));
-        }
-        return Value::list(std::move(result));
-    });
-
-    reg("flatten", [](std::vector<ValuePtr> args) -> ValuePtr {
-        if (args.empty()) return Value::list({});
-        auto* list = std::get_if<ListValue>(&args[0]->data);
-        if (!list) return Value::list({});
-        std::vector<ValuePtr> result;
-        for (const auto& elem : list->elements) {
-            if (auto* inner = std::get_if<ListValue>(&elem->data)) {
-                for (const auto& e : inner->elements) result.push_back(e);
-            } else {
-                result.push_back(elem);
-            }
-        }
-        return Value::list(std::move(result));
-    });
-
-    reg("any?", [this, &getElements](std::vector<ValuePtr> args) -> ValuePtr {
-        if (args.size() < 2) return Value::boolean(false);
-        auto elems = getElements(args[0]);
-        auto* fn = std::get_if<FunctionValue>(&args[1]->data);
-        if (!fn || !fn->native) return Value::boolean(false);
-        for (const auto& elem : elems) {
-            if (fn->native({elem})->isTrue()) return Value::boolean(true);
-        }
-        return Value::boolean(false);
-    });
-
-    reg("all?", [this, &getElements](std::vector<ValuePtr> args) -> ValuePtr {
-        if (args.size() < 2) return Value::boolean(true);
-        auto elems = getElements(args[0]);
-        auto* fn = std::get_if<FunctionValue>(&args[1]->data);
-        if (!fn || !fn->native) return Value::boolean(true);
-        for (const auto& elem : elems) {
-            if (!fn->native({elem})->isTrue()) return Value::boolean(false);
-        }
-        return Value::boolean(true);
-    });
-
-    reg("count", [this, &getElements](std::vector<ValuePtr> args) -> ValuePtr {
-        if (args.empty()) return Value::integer(0);
+        if (auto* range = std::get_if<RangeValue>(&args[0]->data))
+            return Value::integer(range->end - range->start + 1);
         auto elems = getElements(args[0]);
         if (args.size() < 2) return Value::integer(static_cast<int64_t>(elems.size()));
         auto* fn = std::get_if<FunctionValue>(&args[1]->data);
@@ -335,57 +257,122 @@ auto Evaluator::registerListBuiltins() -> void {
         return Value::integer(c);
     });
 
+    reg("take", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.size() < 2) return Value::list({});
+        auto* list = std::get_if<ListValue>(&args[0]->data);
+        auto* n = std::get_if<IntValue>(&args[1]->data);
+        if (!list || !n) return Value::list({});
+        auto cnt = std::min(static_cast<size_t>(n->value), list->elements.size());
+        return Value::list({list->elements.begin(), list->elements.begin() + cnt});
+    });
+
+    reg("drop", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.size() < 2) return Value::list({});
+        auto* list = std::get_if<ListValue>(&args[0]->data);
+        auto* n = std::get_if<IntValue>(&args[1]->data);
+        if (!list || !n) return Value::list({});
+        auto skip = std::min(static_cast<size_t>(n->value), list->elements.size());
+        return Value::list({list->elements.begin() + skip, list->elements.end()});
+    });
+
+    reg("zip", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.size() < 2) return Value::list({});
+        auto* a = std::get_if<ListValue>(&args[0]->data);
+        auto* b = std::get_if<ListValue>(&args[1]->data);
+        if (!a || !b) return Value::list({});
+        auto len = std::min(a->elements.size(), b->elements.size());
+        std::vector<ValuePtr> result;
+        for (size_t i = 0; i < len; i++)
+            result.push_back(Value::tuple({a->elements[i], b->elements[i]}));
+        return Value::list(std::move(result));
+    });
+
+    reg("flatten", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.empty()) return Value::list({});
+        auto* list = std::get_if<ListValue>(&args[0]->data);
+        if (!list) return Value::list({});
+        std::vector<ValuePtr> result;
+        for (const auto& elem : list->elements) {
+            if (auto* inner = std::get_if<ListValue>(&elem->data))
+                for (const auto& e : inner->elements) result.push_back(e);
+            else
+                result.push_back(elem);
+        }
+        return Value::list(std::move(result));
+    });
+
+    reg("any?", [this, getElements](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.size() < 2) return Value::boolean(false);
+        auto elems = getElements(args[0]);
+        auto* fn = std::get_if<FunctionValue>(&args[1]->data);
+        if (!fn || !fn->native) return Value::boolean(false);
+        for (const auto& elem : elems) {
+            if (fn->native({elem})->isTrue()) return Value::boolean(true);
+        }
+        return Value::boolean(false);
+    });
+
+    reg("all?", [this, getElements](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.size() < 2) return Value::boolean(true);
+        auto elems = getElements(args[0]);
+        auto* fn = std::get_if<FunctionValue>(&args[1]->data);
+        if (!fn || !fn->native) return Value::boolean(true);
+        for (const auto& elem : elems) {
+            if (!fn->native({elem})->isTrue()) return Value::boolean(false);
+        }
+        return Value::boolean(true);
+    });
+
     reg("sort", [](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.empty()) return Value::list({});
         auto* list = std::get_if<ListValue>(&args[0]->data);
         if (!list) return Value::list({});
         auto sorted = list->elements;
         std::sort(sorted.begin(), sorted.end(), [](const ValuePtr& a, const ValuePtr& b) {
-            auto* ai = std::get_if<IntValue>(&a->data);
-            auto* bi = std::get_if<IntValue>(&b->data);
-            if (ai && bi) return ai->value < bi->value;
-            auto* af = std::get_if<FloatValue>(&a->data);
-            auto* bf = std::get_if<FloatValue>(&b->data);
-            if (af && bf) return af->value < bf->value;
-            auto* as = std::get_if<StringValue>(&a->data);
-            auto* bs = std::get_if<StringValue>(&b->data);
-            if (as && bs) return as->value < bs->value;
+            if (auto* ai = std::get_if<IntValue>(&a->data))
+                if (auto* bi = std::get_if<IntValue>(&b->data)) return ai->value < bi->value;
+            if (auto* af = std::get_if<FloatValue>(&a->data))
+                if (auto* bf = std::get_if<FloatValue>(&b->data)) return af->value < bf->value;
+            if (auto* as = std::get_if<StringValue>(&a->data))
+                if (auto* bs = std::get_if<StringValue>(&b->data)) return as->value < bs->value;
             return false;
         });
         return Value::list(std::move(sorted));
     });
 
-    reg("min", [](std::vector<ValuePtr> args) -> ValuePtr {
+    reg("min", [getElements](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.empty()) return Value::none();
-        if (auto* list = std::get_if<ListValue>(&args[0]->data)) {
-            if (list->elements.empty()) return Value::none();
-            auto result = list->elements[0];
-            for (size_t i = 1; i < list->elements.size(); i++) {
-                auto* ri = std::get_if<IntValue>(&result->data);
-                auto* ei = std::get_if<IntValue>(&list->elements[i]->data);
-                if (ri && ei && ei->value < ri->value) result = list->elements[i];
-            }
-            return result;
+        auto elems = getElements(args[0]);
+        if (elems.empty()) return Value::none();
+        auto result = elems[0];
+        for (size_t i = 1; i < elems.size(); i++) {
+            if (auto* ri = std::get_if<IntValue>(&result->data))
+                if (auto* ei = std::get_if<IntValue>(&elems[i]->data))
+                    if (ei->value < ri->value) { result = elems[i]; continue; }
+            if (auto* rc = std::get_if<CharValue>(&result->data))
+                if (auto* ec = std::get_if<CharValue>(&elems[i]->data))
+                    if (ec->value < rc->value) result = elems[i];
         }
-        return args[0];
+        return result;
     });
 
-    reg("max", [](std::vector<ValuePtr> args) -> ValuePtr {
+    reg("max", [getElements](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.empty()) return Value::none();
-        if (auto* list = std::get_if<ListValue>(&args[0]->data)) {
-            if (list->elements.empty()) return Value::none();
-            auto result = list->elements[0];
-            for (size_t i = 1; i < list->elements.size(); i++) {
-                auto* ri = std::get_if<IntValue>(&result->data);
-                auto* ei = std::get_if<IntValue>(&list->elements[i]->data);
-                if (ri && ei && ei->value > ri->value) result = list->elements[i];
-            }
-            return result;
+        auto elems = getElements(args[0]);
+        if (elems.empty()) return Value::none();
+        auto result = elems[0];
+        for (size_t i = 1; i < elems.size(); i++) {
+            if (auto* ri = std::get_if<IntValue>(&result->data))
+                if (auto* ei = std::get_if<IntValue>(&elems[i]->data))
+                    if (ei->value > ri->value) { result = elems[i]; continue; }
+            if (auto* rc = std::get_if<CharValue>(&result->data))
+                if (auto* ec = std::get_if<CharValue>(&elems[i]->data))
+                    if (ec->value > rc->value) result = elems[i];
         }
-        return args[0];
+        return result;
     });
 
-    reg("sum", [&getElements](std::vector<ValuePtr> args) -> ValuePtr {
+    reg("sum", [getElements](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.empty()) return Value::integer(0);
         auto elems = getElements(args[0]);
         int64_t total = 0;

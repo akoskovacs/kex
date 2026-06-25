@@ -40,6 +40,13 @@ private:
     auto parsePragma() -> std::unique_ptr<ast::Pragma>;
     auto parseVisibilityBlock() -> std::unique_ptr<ast::VisibilityBlock>;
 
+    // Disambiguates `let` at a declaration-list position (top level, module
+    // body, make body, visibility block — anywhere a bare `let` could mean
+    // either a function definition or a plain value binding to a non-
+    // callable value). Assumes the current token is `Let`. Mirrors
+    // parseLetExpr's identical check for body-statement position.
+    auto isLetFunctionDefAhead() -> bool;
+
     // Functions
     auto parseFunctionClause() -> ast::FunctionClause;
     auto parseParams() -> std::vector<ast::Param>;

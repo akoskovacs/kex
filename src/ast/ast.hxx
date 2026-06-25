@@ -124,6 +124,11 @@ struct TuplePattern {
     std::vector<PatternPtr> elements;
 };
 
+struct RangePattern {
+    PatternPtr start;
+    PatternPtr end;
+};
+
 struct Pattern {
     SourceLocation location;
     std::variant<
@@ -134,7 +139,8 @@ struct Pattern {
         ConstructorPattern,
         RecordPattern,
         ListPattern,
-        TuplePattern
+        TuplePattern,
+        RangePattern
     > kind;
 };
 
@@ -450,6 +456,10 @@ struct MainBlock {
     SourceLocation location;
     std::vector<Param> params;
     std::vector<ExprPtr> body;
+    // True for synthetic wrappers created by parseTopLevelItem around plain
+    // `let x = expr` bindings — these should NOT push a new env scope so
+    // that bound names remain visible to subsequent top-level items.
+    bool synthetic = false;
 };
 
 struct Pragma {

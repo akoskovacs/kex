@@ -12,6 +12,8 @@ add_library(kex_lib
     src/semantic/symbol.cxx
     src/semantic/analyzer.cxx
     src/semantic/types.cxx
+    src/semantic/traits.cxx
+    src/semantic/stdlib_signatures.cxx
     src/semantic/typechecker.cxx
     src/interpreter/value.cxx
     src/interpreter/environment.cxx
@@ -31,6 +33,35 @@ add_library(kex_lib
 
 target_include_directories(kex_lib PUBLIC src)
 
+# GMP backs the arbitrary-precision `Integer` default (see
+# docs/type-system-plan.md's Runtime representation section). Required,
+# not optional like readline below — dynamic linking only: GMP is
+# dual-licensed LGPLv3/GPLv2, fine to depend on under LGPL terms when
+# dynamically linked, but statically linking it into the `kex` binary
+# would pull the GPL's stricter terms onto that binary. Force shared-only
+# resolution rather than letting find_library silently pick up the .a
+# Homebrew also installs alongside the .dylib.
+set(_kex_saved_lib_suffixes ${CMAKE_FIND_LIBRARY_SUFFIXES})
+if(APPLE)
+    set(CMAKE_FIND_LIBRARY_SUFFIXES .dylib)
+else()
+    set(CMAKE_FIND_LIBRARY_SUFFIXES .so)
+endif()
+find_library(GMP_LIB gmp HINTS /opt/homebrew/lib /usr/local/lib)
+find_library(GMPXX_LIB gmpxx HINTS /opt/homebrew/lib /usr/local/lib)
+set(CMAKE_FIND_LIBRARY_SUFFIXES ${_kex_saved_lib_suffixes})
+find_path(GMP_INCLUDE gmpxx.h HINTS /opt/homebrew/include /usr/local/include)
+
+if(NOT GMP_LIB OR NOT GMPXX_LIB OR NOT GMP_INCLUDE)
+    message(FATAL_ERROR
+        "GMP (libgmp + libgmpxx, shared) not found — required for the "
+        "arbitrary-precision Integer runtime. Install it (e.g. `brew "
+        "install gmp`) and re-run cmake.")
+endif()
+
+target_include_directories(kex_lib PUBLIC ${GMP_INCLUDE})
+target_link_libraries(kex_lib PUBLIC ${GMPXX_LIB} ${GMP_LIB})
+
 # Optional readline support
 find_library(READLINE_LIB readline HINTS /opt/homebrew/opt/readline/lib /usr/local/opt/readline/lib)
 find_path(READLINE_INCLUDE readline/readline.h HINTS /opt/homebrew/opt/readline/include /usr/local/opt/readline/include)
@@ -48,6 +79,23 @@ else()
 endif()
 
 enable_testing()
+
+# Type-check all .kex files under src/prelude/ using `kex --check`.
+# Run with: cmake --build build --target check-prelude
+file(GLOB PRELUDE_SOURCES CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/src/prelude/*.kex")
+add_custom_target(check-prelude
+    COMMAND ${CMAKE_COMMAND} -E echo "Checking prelude..."
+    DEPENDS kex
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+)
+foreach(src IN LISTS PRELUDE_SOURCES)
+    cmake_path(GET src FILENAME fname)
+    add_custom_command(TARGET check-prelude POST_BUILD
+        COMMAND $<TARGET_FILE:kex> --check ${src}
+        COMMENT "  ${fname}"
+        VERBATIM
+    )
+endforeach()
 
 add_executable(lexer_test tests/lexer_test.cxx)
 target_link_libraries(lexer_test PRIVATE kex_lib)

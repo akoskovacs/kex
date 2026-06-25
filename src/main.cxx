@@ -210,12 +210,14 @@ auto printUsage(const char* progName) -> void {
     std::cerr << "Usage: " << progName << " [options] <file.kex>\n"
               << "\n"
               << "Options:\n"
-              << "  -r, --run       Execute the program\n"
-              << "  -l, --lex       Print token stream\n"
-              << "  -p, --parse     Print AST\n"
-              << "  -c, --check     Run semantic analysis\n"
-              << "  -h, --help      Show this help\n"
-              << "  -v, --version   Show version\n";
+              << "  -r, --run         Execute the program (default); aborts on type errors\n"
+              << "  -n, --no-check    Skip semantic check when running\n"
+              << "  -l, --lex         Print token stream\n"
+              << "  -p, --parse       Print AST\n"
+              << "  -c, --check       Run semantic analysis only\n"
+              << "  -t, --types       With --check: dump inferred expression types\n"
+              << "  -h, --help        Show this help\n"
+              << "  -v, --version     Show version\n";
 }
 
 auto printVersion() -> void {
@@ -224,24 +226,30 @@ auto printVersion() -> void {
 
 int main(int argc, char* argv[]) {
     static struct option longOptions[] = {
-        {"run",     no_argument, nullptr, 'r'},
-        {"lex",     no_argument, nullptr, 'l'},
-        {"parse",   no_argument, nullptr, 'p'},
-        {"check",   no_argument, nullptr, 'c'},
-        {"help",    no_argument, nullptr, 'h'},
-        {"version", no_argument, nullptr, 'v'},
-        {nullptr,   0,           nullptr,  0 }
+        {"run",      no_argument, nullptr, 'r'},
+        {"no-check", no_argument, nullptr, 'n'},
+        {"lex",      no_argument, nullptr, 'l'},
+        {"parse",    no_argument, nullptr, 'p'},
+        {"check",    no_argument, nullptr, 'c'},
+        {"types",    no_argument, nullptr, 't'},
+        {"help",     no_argument, nullptr, 'h'},
+        {"version",  no_argument, nullptr, 'v'},
+        {nullptr,    0,           nullptr,  0 }
     };
 
     std::string mode = "run";
+    bool skipCheck = false;
+    bool dumpTypes = false;
     int opt;
 
-    while ((opt = getopt_long(argc, argv, "rlcphv", longOptions, nullptr)) != -1) {
+    while ((opt = getopt_long(argc, argv, "rnlcpthv", longOptions, nullptr)) != -1) {
         switch (opt) {
             case 'r': mode = "run"; break;
+            case 'n': skipCheck = true; break;
             case 'l': mode = "lex"; break;
             case 'p': mode = "parse"; break;
             case 'c': mode = "check"; break;
+            case 't': dumpTypes = true; break;
             case 'h': printUsage(argv[0]); return 0;
             case 'v': printVersion(); return 0;
             default: printUsage(argv[0]); return 1;
@@ -525,6 +533,22 @@ int main(int argc, char* argv[]) {
             return 0;
         }
 
+        if (mode == "run" && !skipCheck) {
+            kex::semantic::Analyzer analyzer;
+            bool ok = analyzer.analyze(program);
+            for (const auto& diag : analyzer.diagnostics()) {
+                auto prefix = diag.level == kex::semantic::Diagnostic::Level::Error
+                    ? "error" : "warning";
+                std::cerr << diag.location.file << ":" << diag.location.line << ":"
+                          << diag.location.column << ": " << prefix << ": "
+                          << diag.message << "\n";
+            }
+            if (!ok) {
+                std::cerr << "Aborted: fix type errors before running (use --no-check to skip).\n";
+                return 1;
+            }
+        }
+
         if (mode == "run") {
             kex::interpreter::Evaluator evaluator;
             evaluator.setArgs(scriptArgs);
@@ -571,8 +595,29 @@ int main(int argc, char* argv[]) {
                       << diag.message << "\n";
         }
 
-        if (ok) {
+        if (dumpTypes) {
+            // Collect and sort by source location so output is readable top-to-bottom.
+            const auto& tmap = analyzer.typeMap();
+            std::vector<std::pair<const kex::ast::Expr*, kex::semantic::TypePtr>> entries(
+                tmap.begin(), tmap.end());
+            std::sort(entries.begin(), entries.end(),
+                [](const auto& a, const auto& b) {
+                    const auto& la = a.first->location;
+                    const auto& lb = b.first->location;
+                    if (la.line != lb.line) return la.line < lb.line;
+                    return la.column < lb.column;
+                });
+            for (const auto& [expr, type] : entries) {
+                if (!type) continue;
+                std::cout << expr->location.line << ":" << expr->location.column
+                          << "  " << kex::semantic::typeToString(type) << "\n";
+            }
+        }
+
+        if (ok && !dumpTypes) {
             std::cout << "No errors found.\n";
+        } else if (ok) {
+            std::cerr << "No errors found.\n";
         }
 
         return ok ? 0 : 1;

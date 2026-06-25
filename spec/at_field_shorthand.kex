@@ -20,7 +20,7 @@ make User do
 
   let describe -> String do
     # @method(args) form, and chaining off an @field
-    @greet.upcase
+    @greet.upperCase
   end
 end
 

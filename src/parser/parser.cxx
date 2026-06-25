@@ -98,17 +98,15 @@ auto Parser::parseTopLevelItem() -> ast::TopLevelItem {
         return parseFunctionDef(true);
     }
     if (check(TokenType::Let)) {
-        // let { ... } = ... or let ( ... ) = ... is a destructuring binding, not function def
-        auto nextTok = peekNext().type;
-        if (nextTok == TokenType::LBrace || nextTok == TokenType::LParen ||
-            nextTok == TokenType::LBracket) {
-            // Parse as top-level expression (let binding)
-            auto mainBlock = std::make_unique<ast::MainBlock>();
-            mainBlock->location = currentLocation();
-            mainBlock->body.push_back(parseExpr());
-            return mainBlock;
+        if (isLetFunctionDefAhead()) {
+            return parseFunctionDef();
         }
-        return parseFunctionDef();
+        // Plain value binding or destructuring (let { ... } = ..., let x = expr, etc.)
+        auto mainBlock = std::make_unique<ast::MainBlock>();
+        mainBlock->location = currentLocation();
+        mainBlock->synthetic = true;
+        mainBlock->body.push_back(parseExpr());
+        return mainBlock;
     }
 
     // Top-level type annotation: `name : Type` — must be checked before
@@ -560,11 +558,13 @@ auto Parser::parseParam() -> ast::Param {
         return param;
     }
 
-    // Literal pattern
+    // Literal pattern (including negative numeric literals, e.g. -10)
     if (check(TokenType::Integer) || check(TokenType::Float) ||
         check(TokenType::String) || check(TokenType::Char) ||
         check(TokenType::True) || check(TokenType::False) ||
-        check(TokenType::None) || check(TokenType::Atom)) {
+        check(TokenType::None) || check(TokenType::Atom) ||
+        (check(TokenType::Minus) &&
+         (peekNext().type == TokenType::Integer || peekNext().type == TokenType::Float))) {
         param.pattern = parsePattern();
         return param;
     }
@@ -587,6 +587,12 @@ auto Parser::parseParam() -> ast::Param {
 
     // Constructor pattern
     if (check(TokenType::UpperIdent)) {
+        param.pattern = parsePattern();
+        return param;
+    }
+
+    // name.._ / name..name — range pattern with a var-bound start
+    if (check(TokenType::LowerIdent) && peekNext().type == TokenType::DotDot) {
         param.pattern = parsePattern();
         return param;
     }
@@ -1587,29 +1593,39 @@ auto Parser::parseWhileExpr() -> ast::ExprPtr {
     return expr;
 }
 
-auto Parser::parseLetExpr() -> ast::ExprPtr {
-    auto loc = currentLocation();
-
-    // Check if this is actually a function def: let name(...) or let name = ...
+auto Parser::isLetFunctionDefAhead() -> bool {
     // Note: some keywords can be used as function names (e.g. 'loop', 'where')
     auto nextType = peekNext().type;
-    bool isNameToken = nextType == TokenType::LowerIdent ||
+    bool isLowerName = nextType == TokenType::LowerIdent ||
                        nextType == TokenType::Loop ||
                        nextType == TokenType::Match || nextType == TokenType::SpliceIdent ||
                        nextType == TokenType::Plus || nextType == TokenType::Minus ||
                        nextType == TokenType::Star || nextType == TokenType::EqEq;
-    if (isNameToken) {
-        // Look further: is there a ( after the name? Or is it let name = expr (simple binding)?
-        auto savedPos = m_pos;
-        advance(); // let
-        advance(); // name
-        // It's a function def if followed by ( or -> (return type) or do or ? (predicate)
-        // It's a simple let binding if followed by = directly
-        bool isFuncDef = check(TokenType::LParen) || check(TokenType::Do) ||
-                         check(TokenType::Arrow) || check(TokenType::Question);
-        m_pos = savedPos;
+    bool isUpperName = nextType == TokenType::UpperIdent;
+    if (!isLowerName && !isUpperName) return false;  // `let { ... }`, `let ( ... )`, `let [ ... ]`
 
-        if (isFuncDef) {
+    // UpperIdent after `let` is always a zero-arg constant definition
+    // (`let MAX_RETRIES = 3`, `let DEFAULT_LEVEL = "info"`). UpperIdent can't
+    // be a variable-binding pattern in a let expression, so there's no
+    // ambiguity with the synthetic-MainBlock path.
+    if (isUpperName) return true;
+
+    // Look further: is there a ( after the name? Or is it let name = expr (simple binding)?
+    auto savedPos = m_pos;
+    advance(); // let
+    advance(); // name
+    // It's a function def if followed by ( or -> (return type) or do or ? (predicate)
+    // It's a simple let binding if followed by = directly
+    bool isFuncDef = check(TokenType::LParen) || check(TokenType::Do) ||
+                     check(TokenType::Arrow) || check(TokenType::Question);
+    m_pos = savedPos;
+    return isFuncDef;
+}
+
+auto Parser::parseLetExpr() -> ast::ExprPtr {
+    auto loc = currentLocation();
+
+    if (isLetFunctionDefAhead()) {
             // Parse as inline function def, wrap in a dummy expr
             auto funcDef = parseFunctionDef();
             auto expr = std::make_unique<ast::Expr>();
@@ -1622,15 +1638,26 @@ auto Parser::parseLetExpr() -> ast::ExprPtr {
             auto lambda = std::make_unique<ast::Expr>();
             lambda->location = loc;
             if (!funcDef->clauses.empty()) {
+                // Preserve the clause's params — they were previously
+                // silently dropped (`{}`), so a local function defined this
+                // way (`let loop(state: Int) do ... end`) compiled to a
+                // zero-param Lambda whose body still referenced `state`,
+                // which was never bound to anything.
+                std::vector<ast::LambdaParam> params;
+                for (auto& param : funcDef->clauses[0].params) {
+                    ast::LambdaParam lp;
+                    lp.name = param.name.value_or("_");
+                    lp.type = std::move(param.type);
+                    params.push_back(std::move(lp));
+                }
                 lambda->kind = ast::Lambda{
-                    {}, std::move(funcDef->clauses[0].body)};
+                    std::move(params), std::move(funcDef->clauses[0].body)};
             } else {
                 lambda->kind = ast::Lambda{{}, {}};
             }
 
             expr->kind = ast::LetExpr{std::move(pat), std::move(lambda)};
             return expr;
-        }
     }
 
     auto expr = std::make_unique<ast::Expr>();
@@ -1952,7 +1979,19 @@ auto Parser::parseMapOrBlock() -> ast::ExprPtr {
         std::vector<ast::MapEntry> entries;
         do {
             skipNewlines();
-            auto key = parseExpr();
+            ast::ExprPtr key;
+            // `ident:` sugar — bare lowercase identifier used as an atom key,
+            // same as Elixir's `%{host: "localhost"}` meaning `%{:host => ...}`.
+            // parseExpr() would treat it as a variable lookup instead.
+            if (check(TokenType::LowerIdent) && peekNext().type == TokenType::Colon) {
+                auto keyLoc = currentLocation();
+                auto atomName = advance().value; // consume ident
+                key = std::make_unique<ast::Expr>();
+                key->location = keyLoc;
+                key->kind = ast::AtomLiteral{atomName};
+            } else {
+                key = parseExpr();
+            }
             expect(TokenType::Colon, "Expected ':' in map entry");
             auto value = parseExpr();
             entries.push_back(ast::MapEntry{std::move(key), std::move(value)});
@@ -2031,7 +2070,15 @@ auto Parser::parsePattern() -> ast::PatternPtr {
         return pattern;
     }
 
-    return parsePatternPrimary();
+    auto first = parsePatternPrimary();
+    if (match(TokenType::DotDot)) {
+        auto end = parsePatternPrimary();
+        auto rangePattern = std::make_unique<ast::Pattern>();
+        rangePattern->location = first->location;
+        rangePattern->kind = ast::RangePattern{std::move(first), std::move(end)};
+        return rangePattern;
+    }
+    return first;
 }
 
 auto Parser::parsePatternPrimary() -> ast::PatternPtr {
@@ -2042,6 +2089,16 @@ auto Parser::parsePatternPrimary() -> ast::PatternPtr {
     // Wildcard
     if (match(TokenType::Underscore)) {
         pattern->kind = ast::WildcardPattern{};
+        return pattern;
+    }
+
+    // Negative numeric literal: -10, -3.5
+    if (check(TokenType::Minus) &&
+        (peekNext().type == TokenType::Integer || peekNext().type == TokenType::Float)) {
+        advance(); // consume '-'
+        Token lit = advance();
+        lit.value = "-" + lit.value;
+        pattern->kind = ast::LiteralPattern{std::move(lit)};
         return pattern;
     }
 
@@ -2116,7 +2173,8 @@ auto Parser::parsePatternPrimary() -> ast::PatternPtr {
         return pattern;
     }
 
-    // Tuple pattern: (a, b)
+    // Tuple pattern: (a, b) — or just a grouped pattern (a) / (a..b) if there's
+    // no comma, matching how grouped expressions vs. tuples are parsed.
     if (match(TokenType::LParen)) {
         std::vector<ast::PatternPtr> elements;
         if (!check(TokenType::RParen)) {
@@ -2126,6 +2184,9 @@ auto Parser::parsePatternPrimary() -> ast::PatternPtr {
             }
         }
         expect(TokenType::RParen, "Expected ')'");
+        if (elements.size() == 1) {
+            return std::move(elements[0]);
+        }
         pattern->kind = ast::TuplePattern{std::move(elements)};
         return pattern;
     }

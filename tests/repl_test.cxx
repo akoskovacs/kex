@@ -138,10 +138,10 @@ int main() {
         it("creates and uses lists", []() {
             ReplSession repl;
             repl.eval("let nums = [1, 2, 3, 4, 5]");
-            assertEqual(repl.eval("nums.length"), std::string("5"));
+            assertEqual(repl.eval("nums.count"), std::string("5"));
             assertEqual(repl.eval("nums.sum"), std::string("15"));
-            assertEqual(repl.eval("nums.first"), std::string("1"));
-            assertEqual(repl.eval("nums.last"), std::string("5"));
+            assertEqual(repl.eval("nums.first"), std::string("Just(1)"));
+            assertEqual(repl.eval("nums.last"), std::string("Just(5)"));
         });
 
         it("maps and filters", []() {
@@ -203,11 +203,11 @@ int main() {
     });
 
     describe("REPL — String Operations", []() {
-        it("trim, upcase, downcase", []() {
+        it("trim, upperCase, lowerCase", []() {
             ReplSession repl;
             assertEqual(repl.eval("\"  hi  \".trim"), std::string("\"hi\""));
-            assertEqual(repl.eval("\"hello\".upcase"), std::string("\"HELLO\""));
-            assertEqual(repl.eval("\"HELLO\".downcase"), std::string("\"hello\""));
+            assertEqual(repl.eval("\"hello\".upperCase"), std::string("\"HELLO\""));
+            assertEqual(repl.eval("\"HELLO\".lowerCase"), std::string("\"hello\""));
         });
 
         it("split and join", []() {

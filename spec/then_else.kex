@@ -21,7 +21,7 @@ main do
   let assigned = x.modulo(2) == 0 then "even" else "odd"
   IO.printLine(assigned)
 
-  let withMethodCalls = list.empty? then "none" else "${list.length} items"
+  let withMethodCalls = list.empty? then "none" else "${list.count} items"
   IO.printLine(withMethodCalls)
 
   let parenMultiline = (x > 0

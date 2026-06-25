@@ -24,7 +24,7 @@ main do
   IO.printLine("reversed: ${nums.reverse}")
   IO.printLine("first 3: ${nums.take(3)}")
   IO.printLine("drop 7: ${nums.drop(7)}")
-  IO.printLine("length: ${nums.length}")
+  IO.printLine("length: ${nums.count}")
   IO.printLine("sum: ${nums.sum}")
   IO.printLine("min: ${nums.min}")
   IO.printLine("max: ${nums.max}")
@@ -62,8 +62,8 @@ main do
   let greeting = "  Hello, Kex!  "
   IO.printLine("original: '${greeting}'")
   IO.printLine("trimmed: '${greeting.trim}'")
-  IO.printLine("upcase: '${greeting.trim.upcase}'")
-  IO.printLine("downcase: '${greeting.trim.downcase}'")
+  IO.printLine("upperCase: '${greeting.trim.upperCase}'")
+  IO.printLine("lowerCase: '${greeting.trim.lowerCase}'")
   IO.printLine("reversed: '${"hello".reverse}'")
   IO.printLine("contains 'Kex': ${greeting.contains?("Kex")}")
   IO.printLine("contains 'Ruby': ${greeting.contains?("Ruby")}")
@@ -105,7 +105,7 @@ main do
   end
   IO.printLine("grade for 87: ${grade}")
 
-  let describe = match nums.length do
+  let describe = match nums.count do
     0 -> "empty"
     1 -> "single"
     _ -> "many"
@@ -125,7 +125,7 @@ main do
   ]
 
   let adults = users.filter { |u| u.age >= 18 }
-  IO.printLine("adults: ${adults.length}")
+  IO.printLine("adults: ${adults.count}")
 
   let namesList = users.map { |u| u.name }
   IO.printLine("names: ${namesList}")

@@ -1,2 +1,2 @@
-[1, 2, 3]
-Parse error: spec/error_immutable_bang.kex:6:15: runtime error: Cannot use '!' on immutable binding: frozen
+spec/error_immutable_bang.kex:6:15: error: Cannot use '!' on immutable binding: frozen
+Aborted: fix type errors before running (use --no-check to skip).

@@ -1,3 +1,4 @@
+# kex: no-check
 # `!` mutating calls rebind a `var` binding to a new value; the underlying
 # value itself is never touched in place, and `let` bindings reject `!`.
 main do
@@ -13,7 +14,7 @@ main do
   IO.printLine(y)
 
   var name = "hello"
-  name.upcase!
+  name.upperCase!
   IO.printLine(name)
 
   let frozen = [1, 2, 3]

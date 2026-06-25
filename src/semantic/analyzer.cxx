@@ -4,6 +4,49 @@
 
 namespace kex::semantic {
 
+auto Analyzer::bindPatternVars(const ast::Pattern& pat, SourceLocation loc) -> void {
+    std::visit([this, loc](const auto& node) {
+        using T = std::decay_t<decltype(node)>;
+        if constexpr (std::is_same_v<T, ast::VarPattern>) {
+            if (node.name != "_") {
+                m_symbols.define(Symbol{node.name, SymbolKind::Variable, false, false, true, loc});
+            }
+        }
+        else if constexpr (std::is_same_v<T, ast::ThisPattern>) {
+            if (node.inner) bindPatternVars(*node.inner, loc);
+        }
+        else if constexpr (std::is_same_v<T, ast::ConstructorPattern>) {
+            for (const auto& arg : node.args) {
+                if (arg) bindPatternVars(*arg, loc);
+            }
+        }
+        else if constexpr (std::is_same_v<T, ast::RecordPattern>) {
+            for (const auto& field : node.fields) {
+                if (field.pattern) bindPatternVars(**field.pattern, loc);
+                else if (!field.isStringKey) {
+                    m_symbols.define(Symbol{field.name, SymbolKind::Variable, false, false, true, loc});
+                }
+            }
+        }
+        else if constexpr (std::is_same_v<T, ast::ListPattern>) {
+            for (const auto& elem : node.elements) {
+                if (elem) bindPatternVars(*elem, loc);
+            }
+            if (node.rest) bindPatternVars(**node.rest, loc);
+        }
+        else if constexpr (std::is_same_v<T, ast::TuplePattern>) {
+            for (const auto& elem : node.elements) {
+                if (elem) bindPatternVars(*elem, loc);
+            }
+        }
+        else if constexpr (std::is_same_v<T, ast::RangePattern>) {
+            if (node.start) bindPatternVars(*node.start, loc);
+            if (node.end) bindPatternVars(*node.end, loc);
+        }
+        // LiteralPattern, WildcardPattern introduce nothing.
+    }, pat.kind);
+}
+
 auto Analyzer::analyze(const ast::Program& program) -> bool {
     // Phase 1: scope resolution and purity checking
     for (const auto& item : program.items) {
@@ -11,8 +54,7 @@ auto Analyzer::analyze(const ast::Program& program) -> bool {
     }
 
     // Phase 2: type checking
-    TypeChecker typeChecker;
-    typeChecker.check(program, m_diagnostics);
+    m_checker.check(program, m_diagnostics);
 
     return std::none_of(m_diagnostics.begin(), m_diagnostics.end(),
         [](const Diagnostic& d) { return d.level == Diagnostic::Level::Error; });
@@ -20,6 +62,14 @@ auto Analyzer::analyze(const ast::Program& program) -> bool {
 
 auto Analyzer::diagnostics() const -> const std::vector<Diagnostic>& {
     return m_diagnostics;
+}
+
+auto Analyzer::typeOf(const ast::Expr* expr) const -> TypePtr {
+    return m_checker.typeOf(expr);
+}
+
+auto Analyzer::typeMap() const -> const std::unordered_map<const ast::Expr*, TypePtr>& {
+    return m_checker.typeMap();
 }
 
 auto Analyzer::analyzeTopLevel(const ast::TopLevelItem& item) -> void {
@@ -144,6 +194,9 @@ auto Analyzer::analyzeFunctionDef(const ast::FunctionDef& def) -> void {
                 m_symbols.define(Symbol{
                     *param.name, SymbolKind::Variable, false, false, true, def.location});
             }
+            if (param.pattern) {
+                bindPatternVars(**param.pattern, def.location);
+            }
         }
 
         analyzeBody(clause.body);
@@ -154,14 +207,29 @@ auto Analyzer::analyzeFunctionDef(const ast::FunctionDef& def) -> void {
 }
 
 auto Analyzer::analyzeMainBlock(const ast::MainBlock& block) -> void {
-    m_symbols.pushScope(true); // main is implicitly foul
+    // Synthetic top-level binding wrappers run in the global scope so that
+    // `let x = expr` at top level remains visible to subsequent items.
+    if (!block.synthetic) m_symbols.pushScope(true); // main is implicitly foul
     bool prevFoul = m_inFoulContext;
     m_inFoulContext = true;
+
+    // `main(args) do ... end` — args (and any pattern-shaped param) wasn't
+    // registered at all before, so referencing it inside main's body
+    // always failed with "Undefined identifier".
+    for (const auto& param : block.params) {
+        if (param.name.has_value() && *param.name != "_") {
+            m_symbols.define(Symbol{
+                *param.name, SymbolKind::Variable, false, false, true, block.location});
+        }
+        if (param.pattern) {
+            bindPatternVars(**param.pattern, block.location);
+        }
+    }
 
     analyzeBody(block.body);
 
     m_inFoulContext = prevFoul;
-    m_symbols.popScope();
+    if (!block.synthetic) m_symbols.popScope();
 }
 
 auto Analyzer::analyzeBody(const std::vector<ast::ExprPtr>& body) -> void {
@@ -176,11 +244,11 @@ auto Analyzer::analyzeExpr(const ast::Expr& expr) -> void {
 
         if constexpr (std::is_same_v<T, ast::LetExpr>) {
             if (node.value) analyzeExpr(*node.value);
-            // Register bound name
-            if (auto* varPat = std::get_if<ast::VarPattern>(&node.pattern->kind)) {
-                m_symbols.define(Symbol{
-                    varPat->name, SymbolKind::Variable, false, false, true, expr.location});
-            }
+            // bindPatternVars generalizes the old VarPattern-only check to
+            // every destructuring shape `let` accepts (e.g. `let { host,
+            // port } = config`, `let (a, b) = pair`), which weren't
+            // registering their bound names at all before.
+            if (node.pattern) bindPatternVars(*node.pattern, expr.location);
         }
         else if constexpr (std::is_same_v<T, ast::VarExpr>) {
             if (node.value) analyzeExpr(*node.value);
@@ -261,6 +329,9 @@ auto Analyzer::analyzeExpr(const ast::Expr& expr) -> void {
                     m_symbols.define(Symbol{
                         *node.subjectBinding, SymbolKind::Variable, false, false, true, expr.location});
                 }
+                for (const auto& pat : clause.patterns) {
+                    if (pat) bindPatternVars(*pat, expr.location);
+                }
                 if (clause.guard && *clause.guard) analyzeExpr(**clause.guard);
                 if (clause.body) analyzeExpr(*clause.body);
                 m_symbols.popScope();
@@ -300,6 +371,10 @@ auto Analyzer::analyzeExpr(const ast::Expr& expr) -> void {
             }
             for (const auto& clause : node.clauses) {
                 m_symbols.pushScope(m_inFoulContext);
+                for (const auto& pat : clause.patterns) {
+                    if (pat) bindPatternVars(*pat, expr.location);
+                }
+                if (clause.guard && *clause.guard) analyzeExpr(**clause.guard);
                 if (clause.body) analyzeExpr(*clause.body);
                 m_symbols.popScope();
             }

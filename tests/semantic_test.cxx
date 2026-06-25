@@ -2,6 +2,9 @@
 #include "../src/lexer/lexer.hxx"
 #include "../src/parser/parser.hxx"
 #include "../src/semantic/analyzer.hxx"
+#include "../src/semantic/types.hxx"
+#include "../src/semantic/traits.hxx"
+#include "../src/semantic/stdlib_signatures.hxx"
 
 using namespace kex;
 using namespace test;
@@ -648,6 +651,494 @@ int main() {
                 "main do\n"
                 "  var name = \"hello\"\n"
                 "  name = \"world\"\n"
+                "end\n"
+            ));
+        });
+    });
+
+    describe("Types — numeric tower", []() {
+        using namespace kex::semantic;
+
+        it("prints Integer for the arbitrary-precision default", []() {
+            assertEqual(typeToString(Type::integer()), std::string("Integer"));
+        });
+
+        it("prints Int (not Int64) for the 64-bit signed alias", []() {
+            assertEqual(typeToString(Type::int64()), std::string("Int"));
+        });
+
+        it("prints sized integer names by table lookup", []() {
+            assertEqual(typeToString(Type::byte()), std::string("Byte"));
+            assertEqual(typeToString(Type::int8()), std::string("Int8"));
+            assertEqual(typeToString(Type::int16()), std::string("Int16"));
+            assertEqual(typeToString(Type::int32()), std::string("Int32"));
+            assertEqual(typeToString(Type::uint8()), std::string("Byte"));  // UInt8 == Byte
+            assertEqual(typeToString(Type::uint16()), std::string("UInt16"));
+            assertEqual(typeToString(Type::uint32()), std::string("UInt32"));
+            assertEqual(typeToString(Type::uint64()), std::string("UInt64"));
+        });
+
+        it("prints sized float names, with no plain Float type", []() {
+            assertEqual(typeToString(Type::float32()), std::string("Float32"));
+            assertEqual(typeToString(Type::float64()), std::string("Float64"));
+        });
+
+        it("prints String for [Char], not [Char]", []() {
+            assertEqual(typeToString(Type::string()), std::string("String"));
+            assertEqual(typeToString(Type::list(Type::charT())), std::string("String"));
+        });
+
+        it("prints [Char] verbatim for lists of non-Char types as [T]", []() {
+            assertEqual(typeToString(Type::list(Type::integer())), std::string("[Integer]"));
+        });
+
+        it("treats String as a list of Char structurally", []() {
+            assertTrue(typesEqual(Type::string(), Type::list(Type::charT())));
+        });
+
+        it("distinguishes sized ints by bit width and signedness", []() {
+            assertFalse(typesEqual(Type::int8(), Type::uint8()));
+            assertFalse(typesEqual(Type::int32(), Type::int64()));
+            assertTrue(typesEqual(Type::int64(), Type::int64()));
+        });
+
+        it("distinguishes sized floats by bit width", []() {
+            assertFalse(typesEqual(Type::float32(), Type::float64()));
+            assertTrue(typesEqual(Type::float64(), Type::float64()));
+        });
+
+        it("does not equate Char with Integer", []() {
+            assertFalse(typesEqual(Type::charT(), Type::integer()));
+        });
+    });
+
+    describe("Types — trait registry", []() {
+        using namespace kex::semantic;
+        auto traits = TraitRegistry::withBuiltins();
+
+        it("satisfies Number/Integer for every sized int and arbitrary-precision Integer", [traits]() {
+            assertTrue(traits.satisfies(Type::integer(), "Integer"));
+            assertTrue(traits.satisfies(Type::integer(), "Number"));
+            assertTrue(traits.satisfies(Type::int8(), "Integer"));
+            assertTrue(traits.satisfies(Type::byte(), "Number"));
+        });
+
+        it("satisfies Float/Number for sized floats only", [traits]() {
+            assertTrue(traits.satisfies(Type::float32(), "Float"));
+            assertTrue(traits.satisfies(Type::float64(), "Number"));
+            assertFalse(traits.satisfies(Type::float64(), "Integer"));
+        });
+
+        it("rejects Char/Bool for Integer and Number", [traits]() {
+            assertFalse(traits.satisfies(Type::charT(), "Integer"));
+            assertFalse(traits.satisfies(Type::boolean(), "Number"));
+        });
+
+        it("matches Ruby: even?'s Integer constraint rejects Float", [traits]() {
+            assertTrue(traits.satisfies(Type::int64(), "Integer"));
+            assertFalse(traits.satisfies(Type::float64(), "Integer"));
+        });
+
+        it("satisfies Comparable for ordered primitives but not Bool", [traits]() {
+            assertTrue(traits.satisfies(Type::int64(), "Comparable"));
+            assertTrue(traits.satisfies(Type::string(), "Comparable"));
+            assertFalse(traits.satisfies(Type::boolean(), "Comparable"));
+        });
+
+        it("satisfies Equatable/Showable for primitives", [traits]() {
+            assertTrue(traits.satisfies(Type::boolean(), "Equatable"));
+            assertTrue(traits.satisfies(Type::atom(), "Showable"));
+        });
+
+        it("satisfies Equatable for a list/tuple by recursing into element types", [traits]() {
+            assertTrue(traits.satisfies(Type::list(Type::integer()), "Equatable"));
+            assertTrue(traits.satisfies(Type::tuple({Type::integer(), Type::boolean()}), "Equatable"));
+        });
+
+        it("does not satisfy Equatable for a list of an unregistered type", [traits]() {
+            assertFalse(traits.satisfies(Type::list(Type::named("MysteryType")), "Equatable"));
+        });
+
+        it("satisfies Resultable/Optionable via the prelude ADT bridge", [traits]() {
+            assertTrue(traits.satisfies(Type::named("Ok"), "Resultable"));
+            assertTrue(traits.satisfies(Type::named("Error"), "Resultable"));
+            assertTrue(traits.satisfies(Type::named("Just"), "Optionable"));
+            assertFalse(traits.satisfies(Type::named("Ok"), "Optionable"));
+        });
+
+        it("does not satisfy an unregistered trait for a NamedType", [traits]() {
+            assertFalse(traits.satisfies(Type::named("Ok"), "Showable"));
+        });
+
+        it("exposes built-in trait definitions by name", [traits]() {
+            assertTrue(traits.get("Comparable") != nullptr);
+            assertTrue(traits.get("NoSuchTrait") == nullptr);
+        });
+    });
+
+    describe("Types — stdlib signature table", []() {
+        using namespace kex::semantic;
+        auto table = SignatureTable::withStdlib();
+
+        it("knows even?/odd? take one Integer-constrained param and return Bool", [table]() {
+            auto* sigs = table.lookup("even?");
+            assertTrue(sigs != nullptr);
+            assertEqual(sigs->size(), size_t(1));
+            assertEqual((*sigs)[0].params.size(), size_t(1));
+            assertTrue(typesEqual((*sigs)[0].result, Type::boolean()));
+        });
+
+        it("knows ok?/error?/some?/none? return Bool", [table]() {
+            for (const auto& name : {"ok?", "error?", "some?", "none?"}) {
+                auto* sigs = table.lookup(name);
+                assertTrue(sigs != nullptr);
+                assertTrue(typesEqual((*sigs)[0].result, Type::boolean()));
+            }
+        });
+
+        it("registers `or` as two overloads, one per prelude ADT family", [table]() {
+            auto* sigs = table.lookup("or");
+            assertTrue(sigs != nullptr);
+            assertEqual(sigs->size(), size_t(2));
+        });
+
+        it("returns nullptr for a function not in the table", [table]() {
+            assertTrue(table.lookup("not_a_real_stdlib_fn") == nullptr);
+        });
+    });
+
+    describe("Semantic — Stdlib call checking", []() {
+        it("rejects 'c'.even? — Char doesn't satisfy the Integer constraint", []() {
+            assertTrue(hasError(
+                "main do\n"
+                "  let x = 'c'.even?\n"
+                "end\n",
+                "even?"
+            ));
+        });
+
+        it("accepts 4.even?", []() {
+            assertTrue(noErrors(
+                "main do\n"
+                "  let x = 4.even?\n"
+                "end\n"
+            ));
+        });
+
+        it("rejects a wrong-arity stdlib call", []() {
+            assertTrue(hasError(
+                "main do\n"
+                "  let x = even?(1, 2)\n"
+                "end\n",
+                "argument"
+            ));
+        });
+
+        it("does not check calls to unknown/user-defined functions", []() {
+            assertTrue(noErrors(
+                "let myFunc(x) = x\n"
+                "main do\n"
+                "  myFunc(1)\n"
+                "end\n"
+            ));
+        });
+    });
+
+    describe("Semantic — Match exhaustiveness", []() {
+        it("rejects a user sum type match missing a constructor", []() {
+            assertTrue(hasError(
+                "type Shape = Circle(Float) | Rectangle(Float, Float) | Triangle(Float, Float, Float)\n"
+                "main do\n"
+                "  let s = Circle(1.0)\n"
+                "  match s do\n"
+                "    Circle(r) -> r\n"
+                "    Rectangle(w, h) -> w * h\n"
+                "  end\n"
+                "end\n",
+                "Non-exhaustive"
+            ));
+        });
+
+        it("accepts a fully-covered user sum type match", []() {
+            assertTrue(noErrors(
+                "type Shape = Circle(Float) | Rectangle(Float, Float)\n"
+                "main do\n"
+                "  let s = Circle(1.0)\n"
+                "  match s do\n"
+                "    Circle(r) -> r\n"
+                "    Rectangle(w, h) -> w * h\n"
+                "  end\n"
+                "end\n"
+            ));
+        });
+
+        it("accepts a match covered by an unguarded wildcard clause", []() {
+            assertTrue(noErrors(
+                "type Shape = Circle(Float) | Rectangle(Float, Float) | Triangle(Float, Float, Float)\n"
+                "main do\n"
+                "  let s = Circle(1.0)\n"
+                "  match s do\n"
+                "    Circle(r) -> r\n"
+                "    _ -> 0.0\n"
+                "  end\n"
+                "end\n"
+            ));
+        });
+
+        it("rejects an Option match missing None", []() {
+            assertTrue(hasError(
+                "main do\n"
+                "  let x = Just(1)\n"
+                "  match x do\n"
+                "    Just(v) -> v\n"
+                "  end\n"
+                "end\n",
+                "Non-exhaustive"
+            ));
+        });
+
+        it("accepts an Option match that does cover None", []() {
+            // None lexes as its own TokenType::None and parses as a
+            // LiteralPattern, not ConstructorPattern{"None"} — a clause
+            // set with both Just and None present must be recognized as
+            // exhaustive, not just one without the other.
+            assertTrue(noErrors(
+                "main do\n"
+                "  let x = Just(1)\n"
+                "  match x do\n"
+                "    Just(v) -> v\n"
+                "    None -> 0\n"
+                "  end\n"
+                "end\n"
+            ));
+        });
+
+        it("does not count a guarded clause alone as covering its constructor", []() {
+            assertTrue(hasError(
+                "type Shape = Circle(Float) | Rectangle(Float, Float)\n"
+                "main do\n"
+                "  let s = Circle(1.0)\n"
+                "  match s do\n"
+                "    Circle(r) when r > 0.0 -> r\n"
+                "    Rectangle(w, h) -> w * h\n"
+                "  end\n"
+                "end\n",
+                "Non-exhaustive"
+            ));
+        });
+
+        it("binds constructor pattern args so they're not flagged as undefined", []() {
+            assertTrue(noErrors(
+                "type Pair = Pair(Int, Int)\n"
+                "main do\n"
+                "  let p = Pair(1, 2)\n"
+                "  match p do\n"
+                "    Pair(a, b) -> a + b\n"
+                "  end\n"
+                "end\n"
+            ));
+        });
+    });
+
+    describe("Semantic — User-defined function signatures", []() {
+        it("rejects a call that violates a declared param annotation", []() {
+            assertTrue(hasError(
+                "let greet(name: String) = name\n"
+                "main do\n"
+                "  let x = greet(42)\n"
+                "end\n",
+                "greet"
+            ));
+        });
+
+        it("accepts a call matching a declared param annotation", []() {
+            assertTrue(noErrors(
+                "let greet(name: String) = name\n"
+                "main do\n"
+                "  let x = greet(\"world\")\n"
+                "end\n"
+            ));
+        });
+
+        it("does not hard-error Int vs Integer — not runtime-distinguished yet", []() {
+            assertTrue(noErrors(
+                "let double(n: Int) = n * 2\n"
+                "let quad(n: Int) = double(double(n))\n"
+            ));
+        });
+
+        it("treats a single-letter param annotation as generic, usable at multiple call-site types", []() {
+            assertTrue(noErrors(
+                "let identity(a: A) = a\n"
+                "main do\n"
+                "  let x = identity(1)\n"
+                "  let y = identity(\"hi\")\n"
+                "end\n"
+            ));
+        });
+
+        it("forward references with compatible types pass", []() {
+            assertTrue(noErrors(
+                "let useIt(x: String) = laterFunc(x)\n"
+                "let laterFunc(s: String) = s\n"
+                "main do\n"
+                "  useIt(\"hello\")\n"
+                "end\n"
+            ));
+        });
+
+        it("forward references with type mismatches are caught", []() {
+            assertTrue(hasError(
+                "let useIt(x: Int) = laterFunc(x)\n"
+                "let laterFunc(s: String) = s\n",
+                "laterFunc"
+            ));
+        });
+
+        it("does not register make-block methods for call checking (implicit `this` receiver)", []() {
+            assertTrue(noErrors(
+                "make Int do\n"
+                "  let describe(label: String) = label\n"
+                "end\n"
+                "main do\n"
+                "  let x = 5.describe(42)\n"
+                "end\n"
+            ));
+        });
+
+        it("accepts calling a zero-arg top-level binding with arguments (auto-call-then-apply)", []() {
+            // Every top-level `let NAME = EXPR` is a 0-param function
+            // (Parser::parseFunctionDef) — referencing it auto-calls it
+            // (Evaluator::autoCallZeroArgConstant), so `hello("Alice")`
+            // means "call hello(), then apply 'Alice' to the result,"
+            // not "call hello with 1 argument" (a real arity mismatch).
+            assertTrue(noErrors(
+                "let makeGreeter(prefix: String) -> (String -> String) do\n"
+                "  return { |name| \"${prefix}, ${name}!\" }\n"
+                "end\n"
+                "let hello = makeGreeter(\"Hello\")\n"
+                "main do\n"
+                "  hello(\"Alice\")\n"
+                "end\n"
+            ));
+        });
+
+        it("counts a trailing do...end block as an argument toward arity", []() {
+            assertTrue(noErrors(
+                "let times(n: Int, block: Block<[()]>) do\n"
+                "  (1..n).each { |_| block() }\n"
+                "end\n"
+                "main do\n"
+                "  times(3) do\n"
+                "    IO.printLine(\"hello\")\n"
+                "  end\n"
+                "end\n"
+            ));
+        });
+    });
+
+    describe("Semantic — main(params) binding", []() {
+        it("binds main's params so they're not flagged as undefined", []() {
+            assertTrue(noErrors(
+                "main(args) do\n"
+                "  IO.printLine(args)\n"
+                "end\n"
+            ));
+        });
+    });
+
+    describe("Semantic — standalone type annotations", []() {
+        it("accepts a function whose body matches the declared return type", []() {
+            assertTrue(noErrors(
+                "add : Int -> Int -> Int\n"
+                "let add(a, b) = a + b\n"
+                "main do\n"
+                "  IO.printLine(add(1, 2))\n"
+                "end\n"
+            ));
+        });
+
+        it("rejects a function whose body return type contradicts the annotation", []() {
+            assertTrue(hasError(
+                "add : Int -> Int -> String\n"
+                "let add(a, b) = a + b\n"
+                "main do\n"
+                "  IO.printLine(add(1, 2))\n"
+                "end\n"
+            ));
+        });
+
+        it("uses declared param types for call checking even without inline annotations", []() {
+            // `add` has no inline type annotations on its params, but the
+            // standalone annotation supplies them — passing a String should error.
+            assertTrue(hasError(
+                "add : Int -> Int -> Int\n"
+                "let add(a, b) = a + b\n"
+                "main do\n"
+                "  add(\"x\", 2)\n"
+                "end\n"
+            ));
+        });
+    });
+
+    describe("Semantic — type aliases", []() {
+        it("resolves a type alias in a param annotation", []() {
+            // `type Level = :debug | :info` should make `level: Level`
+            // accept an Atom argument without a type error.
+            assertTrue(noErrors(
+                "type Level = :debug | :info | :warn | :error\n"
+                "let log(level: Level, msg: String) do\n"
+                "  IO.printLine(msg)\n"
+                "end\n"
+                "main do\n"
+                "  log(:debug, \"hello\")\n"
+                "end\n"
+            ));
+        });
+
+        it("still rejects a clearly wrong type for an aliased param", []() {
+            assertTrue(hasError(
+                "type Level = :debug | :info\n"
+                "let log(level: Level, msg: String) do\n"
+                "  IO.printLine(msg)\n"
+                "end\n"
+                "main do\n"
+                "  log(42, \"hello\")\n"
+                "end\n"
+            ));
+        });
+    });
+
+    describe("Semantic — top-level value binding scope", []() {
+        it("top-level `let x = expr` is visible to subsequent top-level bindings", []() {
+            assertTrue(noErrors(
+                "let base = 10\n"
+                "let doubled = base * 2\n"
+                "main do\n"
+                "  IO.printLine(doubled)\n"
+                "end\n"
+            ));
+        });
+
+        it("top-level `let x = expr` is not confused with a function def", []() {
+            // Before the parser fix `let greeting = \"hi\"` was parsed as a
+            // FunctionDef; now it's a plain LetExpr in a synthetic MainBlock.
+            assertTrue(noErrors(
+                "let greeting = \"hello\"\n"
+                "main do\n"
+                "  IO.printLine(greeting)\n"
+                "end\n"
+            ));
+        });
+
+        it("still parses actual function defs correctly after the fix", []() {
+            assertTrue(noErrors(
+                "let add(a: Int, b: Int) -> Int do\n"
+                "  a + b\n"
+                "end\n"
+                "main do\n"
+                "  let r = add(1, 2)\n"
+                "  IO.printLine(r)\n"
                 "end\n"
             ));
         });

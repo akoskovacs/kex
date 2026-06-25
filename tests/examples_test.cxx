@@ -177,7 +177,7 @@ int main() {
         it("string operations work", []() {
             auto output = runFile("examples/stdlib_demo.kex");
             assertTrue(output.find("trimmed: 'Hello, Kex!'") != std::string::npos);
-            assertTrue(output.find("upcase: 'HELLO, KEX!'") != std::string::npos);
+            assertTrue(output.find("upperCase: 'HELLO, KEX!'") != std::string::npos);
             assertTrue(output.find("reversed: 'olleh'") != std::string::npos);
             assertTrue(output.find("joined: one | two | three | four") != std::string::npos);
         });

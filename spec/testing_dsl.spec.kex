@@ -1,3 +1,4 @@
+# kex: no-check
 # describe/it/assert — minimal RSpec-style testing DSL (registerTestBuiltins).
 # Failing assertions mark the enclosing `it` failed without aborting the
 # rest of the suite; nesting is purely organizational (indentation only).

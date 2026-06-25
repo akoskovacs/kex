@@ -15,7 +15,7 @@ main do
 
   var name = "  hello  "
   name.trim!           # "hello"
-  name.upcase!         # "HELLO"
+  name.upperCase!         # "HELLO"
 
   # Compile error — can't use ! on let bindings
   # let frozen = [1, 2, 3]

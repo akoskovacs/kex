@@ -1,7 +1,11 @@
 # Kex Type System Plan
 
-Status: design doc, not yet implemented beyond the existing `src/semantic/`
-scaffold described below. Written 2026-06-23.
+Status (2026-06-26): phases 1, 2 (bignum half only), 3, 4, 4.5, 5
+(scoped), and 6 are implemented. `kex run` now gates on `kex --check` by
+default (zero checker false positives across all 30 example files); use
+`--no-check` to skip. Phase 7 untouched. See the per-phase notes in
+Rollout phases for exactly what shipped vs. was scoped out. Originally
+written 2026-06-23.
 
 ## Problem
 
@@ -184,7 +188,7 @@ build the open version now while the surface area is still small:
 ```cxx
 struct TraitDef {
     std::string name;                              // "Number", "Comparable", user-defined names too
-    std::vector<Signature> requiredMethods;        // e.g. Comparable requires `compare : This -> This -> Int`
+    std::vector<Signature> requiredMethods;        // e.g. Comparable requires `compare : This -> Comparison`
 };
 
 class TraitRegistry {
@@ -199,6 +203,13 @@ public:
 
     // Record that `typeName` implements `traitName` (from a `type`/`record`/
     // `make` block's declared parents, or built-in registrations below).
+    // Coherence: at most one registration per (typeName, traitName) pair —
+    // a second `make X implement: Trait` for a pair already registered is
+    // a compile error, not a silent override. Same rule Rust/Haskell use,
+    // and for the same reason: `this.method()` dispatch must resolve to
+    // exactly one implementation with no priority/ordering rule to fall
+    // back on. registerImplementation itself enforces this (throws/asserts
+    // on a duplicate pair) rather than leaving it to call sites to check.
     auto registerImplementation(const std::string& typeName, const std::string& traitName) -> void;
 };
 ```
@@ -228,7 +239,6 @@ trait" (an existential, a different and much harder feature):
 ```
 trait Equatable do
   == : This -> This -> Bool
-  != : This -> This -> Bool
 end
 ```
 
@@ -265,26 +275,26 @@ token before falling back to `LowerIdent`, same dispatch
 `parseTypeAnnotation` is reused as-is for trait bodies, exactly as
 originally claimed. Each `TypeAnnotation` inside the block becomes one
 `Signature` in that trait's `TraitDef::requiredMethods`. A type
-*implements* a trait by declaring it via the existing `inheritance` syntax
-(`type Point < Equatable ... end` or a record's declared parents) — at
-that point the checker performs the `This`-substitution described above
-and verifies the type actually defines every required method with a
-matching signature, turning trait conformance into a real, checked
-obligation rather than a name-only declaration. This
-is also exactly how `Equatable`/`Comparable`/`Showable` themselves should
-be specified, once this lands — not hardcoded `TraitDef`s built in C++,
-but the same `trait ... end` block, just shipped as a stdlib-equivalent
-source/registration rather than user-typed. (This is a grammar/parser
-addition layered onto the registry described above, not a blocker for
-landing the registry itself — the registry should accept `TraitDef`s
-constructed either way from day one, so this syntax is additive once it's
-ready, tracked alongside phase 3.)
+*implements* a trait via `make TypeName implement: TraitName do ... end`
+(see `plan-effects-traits.md`'s Traits section — **not** the nominal
+`type Point < Equatable` form `grammar.ebnf`'s `inheritance` rule
+produces, which is a separate, older mechanism this plan doesn't reuse for
+trait conformance) — at that point the checker performs the
+`This`-substitution described above and verifies the type actually
+defines every required method with a matching signature, turning trait
+conformance into a real, checked obligation rather than a name-only
+declaration. This is also exactly how `Equatable`/`Comparable`/`Showable`
+themselves should be specified, once this lands — not hardcoded
+`TraitDef`s built in C++, but the same `trait ... end` block, just shipped
+as a stdlib-equivalent source/registration rather than user-typed. (This
+is a grammar/parser addition layered onto the registry described above,
+not a blocker for landing the registry itself — the registry should
+accept `TraitDef`s constructed either way from day one, so this syntax is
+additive once it's ready, tracked alongside phase 3.)
 
 `NamedType` (`Result<X,E>`, `Option<X>`, user records) implementations are
-populated into the same `TraitRegistry` when a `type`/`record`/`make`
-block is checked (via declared `parents`/`inheritance`, reusing the syntax
-already in `grammar.ebnf`'s `inheritance` rule), plus built-in entries for
-`Result`/`Option`.
+populated into the same `TraitRegistry` when a `make ... implement: ...`
+block is checked, plus built-in entries for `Result`/`Option`.
 
 ## Runtime representation (`src/interpreter/`)
 
@@ -328,6 +338,15 @@ fake it at the checker level only.
   or a vendored copy) before any bignum-backed `IntValue` work starts.
   Either way: this needs its own implementation plan and shouldn't be
   estimated as "just change `PrimitiveType::Kind`."
+  **Licensing decision: dynamic linking only.** GMP is dual-licensed
+  LGPLv3/GPLv2 — fine to depend on under LGPL terms when dynamically
+  linked, but statically linking it into a distributed `kex` binary would
+  pull the GPL's stricter terms onto that binary. Decision: `kex` links
+  GMP dynamically (via `find_package`, not a statically-vendored copy),
+  and release/distribution builds are not statically linked against it.
+  Revisit only if static distribution becomes a hard requirement later —
+  don't default into it by picking `FetchContent` + static build for
+  convenience without re-deciding this.
 - **Conversion boundaries (`as(Type)`, literal-to-sized-type assignment)
   are where width/range checks actually execute** — `300.as(Byte)` must
   inspect the *runtime* value against `Byte`'s range and return `Error`,
@@ -691,40 +710,292 @@ running the whole pipeline. Concretely:
 
 ## Rollout phases
 
-1. **Numeric tower + Char + String-as-[Char] in `types.hxx`/`types.cxx`.**
+1. **DONE. Numeric tower + Char + String-as-[Char] in `types.hxx`/`types.cxx`.**
    No checker-visible behavior change yet beyond representation, plus
    `typesEqual`/`typeToString` updates and tests. (Still type-level only —
    see phase 2 for making it real at runtime.)
-2. **Runtime representation** (`src/interpreter/`): real per-width
-   `IntValue` storage with overflow trapping/wrapping for sized ints, and
-   a bignum backing for the default `Integer`, per the Runtime
-   representation section above. This is independent of, and can proceed
-   in parallel with, phase 3 (the trait system) — but must land before
-   phase 5 (wiring `kex check` into `kex run`), since gating real
-   execution on type-level-only promises that the runtime doesn't keep
-   would be worse than not gating at all.
-3. **Trait system** (`TraitRegistry`/`TraitDef`, `satisfies`, registry for
-   `NamedType`s) + stdlib signature table for the existing ~20-30 stdlib
-   functions, starting with `even?`/`odd?`/`ok?`/`err?`/arithmetic ops
-   since those are the clearest illustration of the gap.
-4. **Wire signature checking into `FunctionCall`/`MethodCall`** in
-   `inferExpr`, replacing the `return Type::unknown()` stubs. Add the
-   structured-diagnostic renderer for the Elm-style error format.
-5. **User-defined function signature inference** (Hindley-Milner-ish
-   unification across clauses), consuming the standalone top-level/module
-   `TypeAnnotation` signatures (see that section above) and the existing
-   inline `param : type_expr` syntax where present, falling back to pure
-   inference otherwise. Includes parameter-type overload resolution
-   (Function overloading section). Return-type overloading is **not**
-   part of this phase or any other — deferred indefinitely, see that
-   section.
-6. **Wire `kex check` results into `kex run`** (or a `--strict` flag) so
-   type errors actually block execution, once confident in false-positive
-   rate — don't flip this on by default until stdlib coverage is solid
-   *and* phase 2's runtime backing has landed, or every example/spec file
-   will need re-validation simultaneously while also running on
-   not-yet-real numeric semantics.
-7. **Tooling consumers** (LSP/formatter/lint) start querying the
+2. **DONE (bignum `Integer`), NOT STARTED (sized-int overflow trapping).**
+   `Integer`'s arbitrary-precision case is real now, not type-level-only:
+   `IntValue{int64_t}` stays the fast path, and a new `BigIntValue{mpz_class}`
+   (`src/interpreter/value.hxx/cxx`) is the fallback — every arithmetic op
+   (`+`/`-`/`*` via `__builtin_{add,sub,mul}_overflow`, `/`/`%`/unary `-`),
+   `valuesEqual`, literal parsing (`evaluator.cxx`'s `IntLiteral` case),
+   `LiteralPattern`/type-name pattern matching, and `even?`/`odd?`/`abs`/
+   `modulo`/`Integer::parse` (`stdlib/integer.cxx`) all promote on overflow
+   and demote back to `IntValue` when a result fits again
+   (`asInteger`/`integerResult` in `value.hxx/cxx` are the shared entry
+   points). GMP is a required dependency now (`CMakeLists.txt`,
+   `find_library` forced to shared-only suffixes, `FATAL_ERROR` if
+   missing) — dynamically linked only, per the licensing decision above;
+   confirmed via `otool -L` that the built binary links `libgmp`/`libgmpxx`
+   as `.dylib`, not statically. 15 new tests in `interpreter_test.cxx`
+   cover overflow promotion, demotion, comparison/equality/division/modulo
+   across representations, `factorial(25)`, and a too-large-for-int64_t
+   literal both as a value and as a `match` pattern.
+   **Not done:** sized integers (`Byte`/`Int8`../`UInt64`) still have zero
+   runtime backing or even runtime *surface* — nothing in the language
+   today constructs a value statically tagged as one (no `as(Byte)`, no
+   stdlib function takes one), so there's nothing to trap/wrap yet. Revisit
+   once `is?`/`as` (Built-in type-introspection section, not started) gives
+   sized types an actual entry point.
+   **Phase 5 note:** phase 5 below was implemented *without* waiting for
+   this phase to be complete (it shipped before the bignum work above
+   existed), by deliberately not enforcing the distinction this phase
+   would add — see phase 5's note for why that's the safer order in
+   practice, not a violation of the dependency above.
+3. **DONE. Trait system** (`TraitRegistry`/`TraitDef`, `satisfies`, registry
+   for `NamedType`s) + stdlib signature table — `src/semantic/traits.hxx/cxx`
+   and `stdlib_signatures.hxx/cxx`, ~25 entries starting with
+   `even?`/`odd?`/`ok?`/`error?`/arithmetic-adjacent functions and the
+   `Math::*` namespace, per the file's own comments for the full list.
+4. **DONE. Wire signature checking into `FunctionCall`/`MethodCall`** in
+   `inferExpr` (`TypeChecker::checkCall`), replacing the
+   `return Type::unknown()` stubs for any name found in the stdlib table.
+   **Not done:** the Elm-style source-snippet-with-carets renderer — that
+   needs raw source text plumbed into `TypeChecker`/`Diagnostic`, which
+   doesn't exist today. Used a structured multi-line freeform `message`
+   instead (headline + every candidate signature listed), which the Error
+   UX section explicitly allows as a fallback.
+   - **4.5. DONE. `match` exhaustiveness checking** (`checkMatchExhaustiveness`).
+     Built-in `Option`/`Result` (the real `Just`/`None`/`Ok`/`Error`
+     constructors per `adt.cxx` — note `docs/types.md`'s `Nothing` spelling
+     for `Option`'s empty case doesn't match the actual prelude and should
+     be corrected there) plus any user `type X = A | B | ...` are tracked
+     in a constructor registry built from a pre-pass over `TypeDef`s. Bails
+     out (no diagnostic) whenever it can't prove a closed set — an
+     unguarded wildcard/var clause, an unregistered constructor, or
+     patterns spanning more than one ADT — rather than risk a false
+     positive. **Side fix required to make this usable at all:** neither
+     `TypeChecker::inferExpr` nor `Analyzer::analyzeExpr`'s `MatchExpr`
+     handling bound the variables a pattern introduces (e.g. `Circle(r)`
+     never defined `r`), so every real match with bindings failed
+     `kex check` with a false "Undefined identifier" — fixed in both via a
+     new `bindPatternVars` recursing through constructor/list/tuple/record
+     patterns. `ReceiveExpr` had the same gap in `Analyzer` (and wasn't
+     checking guards at all) — fixed alongside since it shares
+     `MatchClause`.
+5. **SCOPED, PARTIALLY DONE. User-defined function signature inference.**
+   The full sub-phase breakdown below (5a generalization/instantiation, 5b
+   call-graph SCCs, 5c overload tie-break) is **not** implemented — what
+   shipped instead is a deliberately smaller, real slice: each
+   `FunctionDef` clause gets a `Signature` from its declared
+   `param : Type` annotations (`TypeChecker::resolveTypeExpr`, new —
+   handles `TypeName`/`GenericType`/`FunctionType`/`TupleType`/`ListType`/
+   `MapType`/`OptionalType`/`UnionType`/`AtomType`/`GenericVar`, with
+   single-letter names resolving to a `TypeVar` reused across one clause)
+   or a plain `freshTypeVar()` when unannotated, registered into
+   `m_userSignatures` and checked via the same `checkCall` path as phase 4.
+   Deliberately **not** done, matching 5a/5b's own scope: no let-
+   polymorphism generalization beyond the single-clause generic-var reuse,
+   no call-graph SCC analysis — a call to a function defined *later* in the
+   file, or a self/mutually-recursive call, isn't checked (silently falls
+   back to `Type::unknown()`, same as before this phase — not a new gap,
+   just not yet improved). `make`-block methods are deliberately excluded
+   from `m_userSignatures` — their implicit `this` receiver isn't a regular
+   param, so `checkCall`'s UFCS "receiver is argument 0" desugaring would
+   mis-count their arity; their bodies are still checked, just not
+   registered for call-site checking.
+   **Note on phase 2 ordering:** this landed *before* phase 2's runtime
+   backing, which the dependency note above says not to do — handled by
+   relaxing `argMatchesParam` rather than waiting: any two `Integer`-trait
+   members (arbitrary-precision `Integer`, any `SizedIntType`) are treated
+   as mutually compatible, and likewise for `Float`, since `IntValue`/
+   `FloatValue` are still just one `int64_t`/`double` at runtime today —
+   hard-erroring on a width/precision distinction the runtime doesn't keep
+   would itself be the premature-gating problem phase 2's note warns about.
+   `Integer`-vs-`Float` stays a real mismatch (that one *is* runtime-backed
+   today). This was found empirically: `let double(n: Int) = n * 2` infers
+   return type `Integer` (literal `2` defaults to `Integer`, and mixing
+   with `Int` promotes to the wider type per the Numeric tower rules), and
+   `double(double(n))` then fails matching `double`'s own `Int` param
+   without this relaxation — a real tension between the numeric tower's
+   promotion rules and sized-param declarations that's worth keeping in
+   mind once phase 2 actually adds runtime width/overflow semantics; this
+   relaxation may need revisiting at that point, not just deleting.
+   - **5a. NOT STARTED.** Type-variable infrastructure: generalization and
+     instantiation.
+     Decide, per function, when its inferred type gets generalized into a
+     polymorphic scheme (`let`-polymorphism — e.g. `identity` ending up
+     usable at multiple types at different call sites) versus staying
+     monomorphic, and how a scheme gets instantiated with fresh type
+     variables at each call site. Consume the standalone top-level/module
+     `TypeAnnotation` signatures (see that section above) and the existing
+     inline `param : type_expr` syntax where present as the declared case,
+     falling back to this inference machinery otherwise. This sub-phase is
+     also the prerequisite for representing user-defined generic types at
+     all (records/functions with type parameters) — nothing later in this
+     plan should assume generics "just work" without it.
+   - **5b. NOT STARTED.** Mutual recursion via call-graph grouping.
+     Build the call graph
+     across `FunctionDef`s, compute strongly-connected components, and
+     infer/generalize each SCC as a unit before moving on in topological
+     order — inferring functions one at a time in textual order breaks the
+     moment two functions call each other, which is ordinary in idiomatic
+     Kex (e.g. mutually recursive parser combinators).
+   - **5c. NOT STARTED.** Parameter-type overload resolution
+     (Function overloading
+     section), once 5a/5b produce a real signature per function — resolving
+     overload sets by parameter type, applying the trait-specificity
+     tie-break, and reporting ambiguity/no-match per the Error UX template.
+     Return-type overloading is **not** part of this phase or any other —
+     deferred indefinitely, see that section.
+     **Current interim behavior:** `checkCall` already tolerates multiple
+     full matches (silently picks the first, no diagnostic) because
+     ordinary pattern-clause overloading (`len([])`/`len([_|t])`) routinely
+     produces this when params are unannotated — that's the right safe
+     default until 5c adds the real tie-break, not a bug to "fix" by
+     erroring.
+6. **DONE. `kex run` gates on `kex --check`; `--no-check` skips.**
+   Two 6a audit rounds and a 6b round (prior session + this session)
+   brought checker false positives to zero across all 30 example files;
+   all genuinely-undefined pseudocode references in `processes.kex` and
+   `real_world.kex` fixed. `--strict` flag replaced by making checking the
+   default; `--no-check` is the new escape hatch. Original note follows:
+   **NOT YET VIABLE — two 6a audit rounds done, false-positive rate much
+   lower but not zero.** The actual blocker turned out not to be phase 2
+   (the bignum half landed cleanly, see above) but the false-positive rate
+   of `kex check` itself — running it over every example for the first
+   time ever (`examples_test` only runs the *interpreter*, never the
+   checker) found real bugs spanning multiple components, not just this
+   plan's own work. Two passes so far:
+   - **Round 1 fixes (all with regression tests):**
+     - `argMatchesParam` didn't recurse into compound types — `[Int]` vs
+       `[Integer]`, and `String`/`[Char]` vs a generic `[A]` param, were
+       hard mismatches because only the *top-level* type got the
+       Integer/Float-trait relaxation, never a wrapped element type.
+     - `resolveTypeExpr` didn't recognize trait-only names (`Float`,
+       `Number`, `Comparable`, ...) in a param annotation — `Float` resolved
+       to a bogus opaque `NamedType` instead of `Type::constrained("Float",
+       "Float")`, so e.g. a `Float`-annotated param rejected every actual
+       `Float64` argument.
+     - `checkCall` had no defense against name collisions: a `make
+       CustomType do let modulo(...) ... end` method isn't registered
+       anywhere (make-block methods are deliberately excluded, see phase
+       5's note) — so a call to it got checked against the unrelated
+       *stdlib* `modulo` signature purely because the names matched.
+       Fixed with a narrow guard (only triggers when the receiver/first
+       arg is a `NamedType` and *no* known overload's first param could
+       ever accept it) plus an explicit bail-out whenever any argument is
+       the literal unsubstituted `This` placeholder (no substitution
+       mechanism exists yet — see Surface syntax for declaring a trait).
+     - `checkMatchExhaustiveness` never recognized `None` as covering
+       `Option` — `None` lexes as its own `TokenType::None` (`lexer.cxx`)
+       and parses as a `LiteralPattern`, not `ConstructorPattern{"None"}`,
+       which the exhaustiveness check only looked for. This meant **every**
+       `Just(...)/None` match in the example suite was flagged as
+       non-exhaustive even though it explicitly handled `None` — the
+       phase 4.5 unit tests never caught this because they only tested the
+       "no `None` clause at all" case, never "a `None` clause is present
+       and should count."
+     - `Analyzer::analyzeFunctionDef` and `Analyzer::analyzeExpr`'s
+       `LetExpr` case only ever registered `param.name`/`VarPattern` —
+       never `param.pattern` (e.g. `@Just(x)` this-patterns) or any other
+       `let` destructuring shape (`let (a, b) = ...`, `let { k, v } = ...`).
+       `TypeChecker` got the equivalent fix for params back in phase 5 but
+       `Analyzer` (a separate component, separate symbol table) didn't;
+       fixed both sides now via the shared `bindPatternVars`.
+   - **Round 2 fixes — these turned out to be real bugs, not just checker
+     false positives, confirmed by their actual runtime behavior:**
+     - **`Parser::parseLetExpr` silently dropped params.** A nested local
+       function (`let loop(state: Int) do ... end` used as a statement
+       inside another function's body, as opposed to a top-level
+       `FunctionDef`) desugars to `LetExpr{VarPattern, Lambda}` — and the
+       `Lambda` was hardcoded to `{}` params, discarding the original
+       clause's params entirely while keeping the body that still
+       referenced them. Confirmed as a real runtime bug, not just a
+       checker artifact: before the fix, calling such a function returned
+       garbage (e.g. the inner value unevaluated) instead of recursing
+       correctly. Fixed by converting `FunctionClause::Param` into
+       `LambdaParam` (name + type; a param that's pattern-only with no
+       name falls back to `"_"`, since `LambdaParam` has no pattern field —
+       a pre-existing structural limit, not made worse by this fix).
+     - **`main(args) do ... end` never bound `args`.** Neither
+       `Analyzer::analyzeMainBlock` nor `TypeChecker::checkMainBlock`
+       registered `block.params` at all — every reference to a declared
+       `main` param was "Undefined identifier." Fixed in both (mirrors the
+       function-param fix from phase 5/round 1).
+     - **The "auto-call zero-arg, then apply" idiom isn't an arity error.**
+       Every top-level `let NAME = EXPR` is a 0-param `FunctionDef`
+       (`Parser::parseFunctionDef` — there's no separate top-level
+       value-binding production), and referencing `NAME` bare auto-calls it
+       (`Evaluator::autoCallZeroArgConstant`). So `let hello =
+       makeGreeter("Hello")` then `hello("Alice")` means "call `hello()`,
+       then apply `"Alice"` to *that* result" — not "call `hello` with 1
+       argument," which is what 0 declared params would otherwise signal.
+       `checkCall` now treats a single, unambiguous 0-param signature
+       called with arguments as this idiom (returns `Unknown`) rather than
+       an arity mismatch. (An overload set mixing 0-param and non-0-param
+       signatures still goes through normal arity checking — this only
+       fires when there's exactly one signature and it takes zero params.)
+     - **A trailing `do...end`/`{ }` block argument wasn't counted toward
+       arity at all** — `FunctionCall`/`MethodCall`'s `node.block` was
+       inferred "for effect" and discarded, so `times(3) do ... end`
+       against `times(n, block)` looked like 1 argument against 2 params.
+       Now pushes a permissive `Type::unknown()` placeholder for the block
+       onto `argTypes` (not its real inferred type — `Block<T>` isn't
+       structurally modeled yet, see `resolveTypeExpr`'s `BlockType` case).
+   - **Found but explicitly NOT fixed — out of scope, listed here so the
+     next pass doesn't have to rediscover them:**
+     - **Parser ambiguity:** `let NAME = { ... }` at the top level parses
+       as a zero-arg `FunctionDef` with body `{ ... }`, not a value binding
+       to a map literal — confirmed by printing `config` from `let config =
+       { host: "x" }` and getting `<function:config>`. This is also *why*
+       `examples/maps.kex` doesn't crash at runtime despite its map-literal
+       keys (`host`, `port`, ...) being bare identifiers with no atom-key
+       sugar: the body is never evaluated unless called. Same root grammar
+       ambiguity class as the two round-2 parser fixes above, but a
+       different code path (`parseFunctionDef`'s top-level production, not
+       `parseLetExpr`'s nested-statement desugaring) — not attempted since
+       "what should `let NAME = mapLiteral` even mean" needs a real
+       decision (is *every* top-level `let X = Y` secretly a function?
+       probably not the intent for non-callable values), not a mechanical
+       fix like the other two were.
+     - **Type aliases aren't resolved** (the Type aliases section above,
+       still NOT STARTED) — a param annotated with a user `type Level = ...`
+       resolves to an opaque `NamedType("Level")` via `resolveTypeExpr`'s
+       fallback, so passing an atom literal that's structurally a member of
+       that union still mismatches (`examples/modules.kex`'s `log` calls).
+     - `examples/real_world.kex`'s `router`: a module-level `let router =
+       ...` (inside a nested `using Http do ... end`) referenced from a
+       sibling `foul start do ... end` in the same module — not yet
+       root-caused whether this is a real cross-scope visibility gap or
+       expected to fail (the surrounding file uses several undefined
+       namespaces — `Router`, `Http`, `UserService`, `Logger` — suggesting
+       it may be illustrative pseudocode rather than meant to fully check).
+     - A pre-existing (predates this entire plan) `ListExpr` homogeneity
+       check oddity in `examples/html_dsl.kex` ("Expected T2, got String").
+     - **Confirmed NOT bugs** (genuinely undefined names in illustrative
+       example code, same as `Router`/`Http` above) — `examples/closures.kex`'s
+       `users`/`words`/`strings`/`items` and `examples/processes.kex`'s
+       `config`/`Database`/`Supervisor`/`Task`/`WebServer`: none of these
+       are defined anywhere in their files. `kex check` correctly flags
+       them; they're not false positives.
+   - **Round 3 fixes (6b, this session):**
+     - Parser ambiguity: `let NAME = expr` at top level was always routed
+       to `parseFunctionDef()`, so `let ages = { ... }` produced a
+       zero-arg `FunctionDef` instead of a value binding. Fixed via
+       `isLetFunctionDefAhead()` helper + `MainBlock::synthetic` flag so
+       the bound name persists into subsequent top-level bindings
+       (previously each synthetic `MainBlock` pushed its own scope).
+     - Bare atom-key map literal: `{ host: "x" }` parsed `host` as a
+       variable reference instead of an atom literal. Fixed in
+       `parseMapOrBlock()`.
+     - Type aliases: `type Level = :a | :b | ...` wasn't resolved in
+       param annotations — `level: Level` rejected every `Atom` argument.
+       Fixed via `m_typeAliases` pre-pass + `UnionType` branch in
+       `argMatchesParam`.
+     - `ListExpr` homogeneity check fired when the first list element had
+       a TypeVar type (from pattern destructuring) and later elements were
+       concrete — the check only skipped when `t` was TypeVar, not when
+       `elemType` was. Fixed: adopt the concrete type when `elemType` is
+       permissive.
+   - **Conclusion after 6b:** zero checker false positives. Remaining errors
+     in 4 example files are genuine undefined identifiers in illustrative
+     pseudocode (`closures.kex`, `maps.kex`, `processes.kex`,
+     `real_world.kex`) — `kex check` correctly flags them. Wiring `kex
+     check` into `kex run` (phase 6's actual goal) is now viable.
+7. **NOT STARTED, BLOCKED on phases 1-6 being load-bearing enough to be worth querying.**
+   Tooling consumers (LSP/formatter/lint) start querying the
    `TypedProgram` map and signature table built in phases 1-4; no new
    inference logic, just new front ends.
 
@@ -766,6 +1037,15 @@ just noting:
   implementer reusing that pattern, it silently becomes `any` and defeats
   the entire point of distinguishing it. Worth a code comment at that
   branch when it's touched, not just a doc note.
+  **Decision for the specific case of a `TypeVar` unifying against surfaced
+  `Unknown`**: unification succeeds and binds the var to `Unknown` — the
+  fact propagates rather than failing unification outright. What stays
+  non-permissive is every *use site* downstream (arithmetic, trait-
+  constrained call, field access): each must independently check for
+  `Unknown` and hard-error until the value is narrowed via `is?`/`match`,
+  per the existing rule. Unification's job is only to thread the fact
+  through the program; it never itself green-lights an operation on an
+  `Unknown`-typed value.
 - **`typesEqual`, `satisfiesTrait`, and numeric widening/coercion are
   three different relations.** `typesEqual` is exact structural equality
   (today's `types.cxx:134`, and it doesn't even handle `UnionType` —

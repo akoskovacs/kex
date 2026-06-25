@@ -47,6 +47,22 @@ auto Evaluator::registerStringBuiltins() -> void {
         return Value::list(std::move(elems));
     });
 
+    reg("startsWith?", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.size() < 2) return Value::boolean(false);
+        auto* str = std::get_if<StringValue>(&args[0]->data);
+        auto* pre = std::get_if<StringValue>(&args[1]->data);
+        if (!str || !pre) return Value::boolean(false);
+        return Value::boolean(str->value.starts_with(pre->value));
+    });
+
+    reg("endsWith?", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.size() < 2) return Value::boolean(false);
+        auto* str = std::get_if<StringValue>(&args[0]->data);
+        auto* suf = std::get_if<StringValue>(&args[1]->data);
+        if (!str || !suf) return Value::boolean(false);
+        return Value::boolean(str->value.ends_with(suf->value));
+    });
+
     reg("contains?", [](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.size() < 2) return Value::boolean(false);
         auto* str = std::get_if<StringValue>(&args[0]->data);
@@ -90,7 +106,7 @@ auto Evaluator::registerStringBuiltins() -> void {
         return Value::string(s.substr(start, end - start + 1));
     });
 
-    reg("upcase", [](std::vector<ValuePtr> args) -> ValuePtr {
+    reg("upperCase", [](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.empty()) return Value::string("");
         auto* str = std::get_if<StringValue>(&args[0]->data);
         if (!str) return Value::string("");
@@ -99,7 +115,7 @@ auto Evaluator::registerStringBuiltins() -> void {
         return Value::string(result);
     });
 
-    reg("downcase", [](std::vector<ValuePtr> args) -> ValuePtr {
+    reg("lowerCase", [](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.empty()) return Value::string("");
         auto* str = std::get_if<StringValue>(&args[0]->data);
         if (!str) return Value::string("");

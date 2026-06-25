@@ -1,1 +1,2 @@
-Parse error: spec/error_next_outside_loop.kex:2:1: runtime error: 'next' used outside a loop
+spec/error_next_outside_loop.kex:3:3: error: 'next' used outside a loop
+Aborted: fix type errors before running (use --no-check to skip).

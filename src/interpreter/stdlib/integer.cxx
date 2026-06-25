@@ -10,18 +10,20 @@ auto Evaluator::registerIntegerBuiltins() -> void {
         m_globalEnv->define(name, val);
     };
 
+    // asInteger/integerResult (value.hxx) treat IntValue and BigIntValue
+    // uniformly, so modulo/abs/even?/odd? work the same on a value that's
+    // overflowed into the bignum representation as on a plain Int.
     reg("modulo", [](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.size() < 2) return Value::integer(0);
-        auto* a = std::get_if<IntValue>(&args[0]->data);
-        auto* b = std::get_if<IntValue>(&args[1]->data);
-        if (a && b && b->value != 0) return Value::integer(a->value % b->value);
+        auto a = asInteger(args[0]);
+        auto b = asInteger(args[1]);
+        if (a && b && *b != 0) return integerResult(*a % *b);
         return Value::integer(0);
     });
 
     reg("abs", [](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.empty()) return Value::integer(0);
-        if (auto* i = std::get_if<IntValue>(&args[0]->data))
-            return Value::integer(i->value < 0 ? -i->value : i->value);
+        if (auto i = asInteger(args[0])) return integerResult(abs(*i));
         if (auto* f = std::get_if<FloatValue>(&args[0]->data))
             return Value::floating(f->value < 0 ? -f->value : f->value);
         return args[0];
@@ -39,16 +41,32 @@ auto Evaluator::registerIntegerBuiltins() -> void {
         return args[0];
     });
 
+    // n.in?(range) / c.in?(range) — inclusive range membership for an Int
+    // or Char receiver against an Int or Char range.
+    reg("in?", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.size() < 2) return Value::boolean(false);
+        auto* range = std::get_if<RangeValue>(&args[1]->data);
+        if (!range) return Value::boolean(false);
+        if (auto* i = std::get_if<IntValue>(&args[0]->data)) {
+            return Value::boolean(i->value >= range->start && i->value <= range->end);
+        }
+        if (auto* c = std::get_if<CharValue>(&args[0]->data)) {
+            auto code = static_cast<int64_t>(static_cast<unsigned char>(c->value));
+            return Value::boolean(code >= range->start && code <= range->end);
+        }
+        return Value::boolean(false);
+    });
+
     reg("even?", [](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.empty()) return Value::boolean(false);
-        auto* i = std::get_if<IntValue>(&args[0]->data);
-        return Value::boolean(i && i->value % 2 == 0);
+        auto i = asInteger(args[0]);
+        return Value::boolean(i.has_value() && mpz_even_p(i->get_mpz_t()) != 0);
     });
 
     reg("odd?", [](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.empty()) return Value::boolean(false);
-        auto* i = std::get_if<IntValue>(&args[0]->data);
-        return Value::boolean(i && i->value % 2 != 0);
+        auto i = asInteger(args[0]);
+        return Value::boolean(i.has_value() && mpz_odd_p(i->get_mpz_t()) != 0);
     });
 
     // Float.parse(s) / Integer.parse(s) -> Result<Float|Int, String> —
@@ -79,6 +97,16 @@ auto Evaluator::registerIntegerBuiltins() -> void {
             int64_t v = std::stoll(s->value, &consumed);
             if (consumed != s->value.size()) throw std::invalid_argument("trailing characters");
             return Value::record("Ok", {{"0", Value::integer(v)}});
+        } catch (const std::out_of_range&) {
+            // Too big for int64_t doesn't mean invalid — Integer is
+            // arbitrary precision; mpz_class's string constructor throws
+            // std::invalid_argument itself if the string isn't a valid
+            // integer (it requires a full match, not a prefix parse).
+            try {
+                return Value::record("Ok", {{"0", integerResult(mpz_class(s->value))}});
+            } catch (const std::exception&) {
+                return Value::record("Error", {{"0", Value::string("invalid integer: " + s->value)}});
+            }
         } catch (const std::exception&) {
             return Value::record("Error", {{"0", Value::string("invalid integer: " + s->value)}});
         }

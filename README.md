@@ -1,5 +1,9 @@
 # Kex
 
+<p align="center">
+<img src="./docs/assets/logo.png" height="340" style="align: center" />
+</p>
+
 Kex is a small functional programming language with Ruby-like syntax, immutable data by default, UFCS method chains, type-directed `make` blocks, pattern matching, and explicit side-effect boundaries.
 
 It is designed for code that reads like a scripting language without giving up typed records, sum types, pure functions, and predictable dispatch.
@@ -151,12 +155,14 @@ type ParseError = InvalidFormat(String) | Overflow | EmptyInput
 
 let parseInt(s: String) -> Result<Int, ParseError> do
   return Error(EmptyInput) if s.empty?
-  return BuiltIn.parseInt(s).mapError { |_| InvalidFormat(s) }
+
+  return Integer.parse(s).mapError { |_| InvalidFormat(s) }
 end
 
 let parsePort(s: String) -> Result<Int, ParseError> do
   let n = parseInt(s)?
   return Error(Overflow) if n > 65535
+
   return Ok(n)
 end
 
@@ -322,9 +328,10 @@ make test           # Run C++ unit tests
 make spec           # Run executable language specs
 make parse          # Parse all examples
 make repl           # Start the interactive REPL
-make run F=file     # Run a .kex file
-make check F=file   # Run semantic analysis
-make install        # Install build/kex to /usr/local/bin/kex
+make run F=file     # Run a .kex file (type-checks first; use --no-check to skip)
+make check F=file         # Run semantic analysis only
+make check-prelude        # Type-check all src/prelude/*.kex files
+make install              # Install build/kex to /usr/local/bin/kex
 make uninstall      # Remove the installed binary
 make clean          # Remove build artifacts
 ```
@@ -358,6 +365,7 @@ src/
   ast/          AST node types
   semantic/     Scope resolution, purity checking, type checking
   interpreter/  Tree-walk interpreter
+  prelude/      Kex-language specs for the built-in prelude (documented with RDoc-style comments)
   main.cxx      CLI entry point
 
 examples/       Language showcase files
@@ -396,13 +404,8 @@ Working today:
 - UFCS, `make` dispatch, `to` conversion convention, operator overloading
 - `@field`/`@method(...)` shorthand for `this` inside `make` blocks
 - `foul` purity boundaries, and local `var` mutation enforced at runtime (`let` bindings reject `=` and `!`)
+- Type system: arbitrary-precision `Integer` (GMP), numeric tower, type-directed dispatch, traits
 - REPL with optional readline support
-
-Test coverage:
-
-- 6 C++ test suites
-- 35 executable spec programs (`make spec`)
-- 29 examples parsed and executed in CI
 
 Planned or incomplete:
 

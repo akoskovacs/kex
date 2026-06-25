@@ -217,13 +217,14 @@ auto Evaluator::execFunctionDef(const ast::FunctionDef& def, const std::string& 
         regName = typeScope + "::" + def.name;
     }
 
-    auto& funcDefs = m_functionDefs[regName];
-    funcDefs.push_back(&def);
+    m_functionDefs[regName].push_back(&def);
 
+    // Capture regName by value so the closure always looks up the current
+    // vector from the map — avoids a dangling pointer when unordered_map
+    // rehashes after a new key is inserted for a different function.
     auto funcValue = std::make_shared<Value>();
-    auto* defsPtr = &funcDefs;
-    funcValue->data = FunctionValue{def.name, [this, defsPtr](std::vector<ValuePtr> args) -> ValuePtr {
-        for (const auto* funcDef : *defsPtr) {
+    funcValue->data = FunctionValue{def.name, [this, regName](std::vector<ValuePtr> args) -> ValuePtr {
+        for (const auto* funcDef : m_functionDefs.at(regName)) {
             for (const auto& clause : funcDef->clauses) {
                 pushEnv();
                 bool matched = true;
@@ -311,9 +312,9 @@ auto Evaluator::execMakeDef(const ast::MakeDef& def) -> void {
 }
 
 auto Evaluator::execMainBlock(const ast::MainBlock& block) -> ValuePtr {
-    if (!m_replMode) pushEnv();
-    // main(args) do ... end — bind the script's command-line arguments
-    // ([String], set via setArgs()) to the declared parameter, if any.
+    if (!m_replMode && !block.synthetic) pushEnv();
+    // main(args) or main(args, env) — bind script arguments and optionally
+    // the ENV snapshot (Map<String, String>) to the declared parameters.
     if (!block.params.empty()) {
         std::vector<ValuePtr> elems;
         for (const auto& arg : m_scriptArgs) elems.push_back(Value::string(arg));
@@ -324,6 +325,12 @@ auto Evaluator::execMainBlock(const ast::MainBlock& block) -> ValuePtr {
         } else if (param.name) {
             m_env->define(*param.name, argsValue);
         }
+        if (block.params.size() >= 2) {
+            auto envValue = m_globalEnv->get("ENV");
+            if (!envValue) { envValue = std::make_shared<Value>(); envValue->data = MapValue{}; }
+            const auto& envParam = block.params[1];
+            if (envParam.name) m_env->define(*envParam.name, envValue);
+        }
     }
     ValuePtr result;
     try {
@@ -331,13 +338,13 @@ auto Evaluator::execMainBlock(const ast::MainBlock& block) -> ValuePtr {
     } catch (ReturnException& ret) {
         result = ret.value();
     } catch (const BreakException&) {
-        if (!m_replMode) popEnv();
+        if (!m_replMode && !block.synthetic) popEnv();
         throw RuntimeError("'break' used outside a loop", block.location);
     } catch (const NextException&) {
-        if (!m_replMode) popEnv();
+        if (!m_replMode && !block.synthetic) popEnv();
         throw RuntimeError("'next' used outside a loop", block.location);
     }
-    if (!m_replMode) popEnv();
+    if (!m_replMode && !block.synthetic) popEnv();
     return result;
 }
 
@@ -354,7 +361,13 @@ auto Evaluator::eval(const ast::Expr& expr) -> ValuePtr {
         using T = std::decay_t<decltype(node)>;
 
         if constexpr (std::is_same_v<T, ast::IntLiteral>) {
-            return Value::integer(std::stoll(node.value));
+            try {
+                return Value::integer(std::stoll(node.value));
+            } catch (const std::out_of_range&) {
+                // Too big for int64_t — Integer is arbitrary precision by
+                // default, so this is a normal value, not an error.
+                return Value::bigInteger(mpz_class(node.value));
+            }
         }
         else if constexpr (std::is_same_v<T, ast::FloatLiteral>) {
             return Value::floating(std::stod(node.value));
@@ -615,12 +628,15 @@ auto Evaluator::eval(const ast::Expr& expr) -> ValuePtr {
                 receiverType = "List";
             } else if (std::holds_alternative<MapValue>(receiver->data)) {
                 receiverType = "Map";
-            } else if (std::holds_alternative<IntValue>(receiver->data)) {
+            } else if (std::holds_alternative<IntValue>(receiver->data) ||
+                       std::holds_alternative<BigIntValue>(receiver->data)) {
                 receiverType = "Integer";
             } else if (std::holds_alternative<FloatValue>(receiver->data)) {
                 receiverType = "Float";
             } else if (std::holds_alternative<StringValue>(receiver->data)) {
                 receiverType = "String";
+            } else if (std::holds_alternative<RangeValue>(receiver->data)) {
+                receiverType = "Range";
             }
             if (!receiverType.empty()) {
                 auto typed = receiverType + "::" + node.method;
@@ -693,11 +709,21 @@ auto Evaluator::eval(const ast::Expr& expr) -> ValuePtr {
             auto* e = std::get_if<IntValue>(&end->data);
             if (s && e) {
                 auto range = std::make_shared<Value>();
-                range->data = RangeValue{s->value, e->value};
+                range->data = RangeValue{s->value, e->value, false};
+                return range;
+            }
+            auto* sc = std::get_if<CharValue>(&start->data);
+            auto* ec = std::get_if<CharValue>(&end->data);
+            if (sc && ec) {
+                auto range = std::make_shared<Value>();
+                range->data = RangeValue{
+                    static_cast<int64_t>(static_cast<unsigned char>(sc->value)),
+                    static_cast<int64_t>(static_cast<unsigned char>(ec->value)),
+                    true};
                 return range;
             }
             auto range = std::make_shared<Value>();
-            range->data = RangeValue{0, 0};
+            range->data = RangeValue{0, 0, false};
             return range;
         }
         else if constexpr (std::is_same_v<T, ast::IfExpr>) {
@@ -1006,8 +1032,14 @@ auto Evaluator::evalBinaryOp(TokenType op, const ValuePtr& left, const ValuePtr&
         }
     }
 
+    // li/ri stay the int64_t fast path for the overwhelmingly common case;
+    // leftInt/rightInt (set for either IntValue or BigIntValue) are the
+    // arbitrary-precision fallback — overflow promotes into it, and once
+    // a value is already a BigIntValue every further op goes through it.
     auto* li = std::get_if<IntValue>(&left->data);
     auto* ri = std::get_if<IntValue>(&right->data);
+    auto leftInt = asInteger(left);
+    auto rightInt = asInteger(right);
     auto* lf = std::get_if<FloatValue>(&left->data);
     auto* rf = std::get_if<FloatValue>(&right->data);
     auto* ls = std::get_if<StringValue>(&left->data);
@@ -1017,12 +1049,23 @@ auto Evaluator::evalBinaryOp(TokenType op, const ValuePtr& left, const ValuePtr&
     auto* lb = std::get_if<BoolValue>(&left->data);
     auto* rb = std::get_if<BoolValue>(&right->data);
 
+    // Lossy (outside double's 53-bit exact-integer range) conversion of an
+    // Integer-like value for mixed Integer/Float arithmetic — same
+    // tradeoff every other Int->Float promotion here already accepts.
+    auto intToDouble = [](IntValue* iv, const mpz_class& asMpz) -> double {
+        return iv ? static_cast<double>(iv->value) : asMpz.get_d();
+    };
+
     switch (op) {
         case TokenType::Plus:
-            if (li && ri) return Value::integer(li->value + ri->value);
+            if (li && ri) {
+                int64_t result;
+                if (!__builtin_add_overflow(li->value, ri->value, &result)) return Value::integer(result);
+            }
+            if (leftInt && rightInt) return integerResult(*leftInt + *rightInt);
             if (lf && rf) return Value::floating(lf->value + rf->value);
-            if (li && rf) return Value::floating(li->value + rf->value);
-            if (lf && ri) return Value::floating(lf->value + ri->value);
+            if (leftInt && rf) return Value::floating(intToDouble(li, *leftInt) + rf->value);
+            if (lf && rightInt) return Value::floating(lf->value + intToDouble(ri, *rightInt));
             // String/Char/[Char] concatenate as text — e.g. 'a' + 'b' ==
             // "ab", "ab" + 'c' == "abc". This is broader than the Char/
             // String *equality* rule (Char isn't a String for ==) — here
@@ -1035,32 +1078,45 @@ auto Evaluator::evalBinaryOp(TokenType op, const ValuePtr& left, const ValuePtr&
             throw RuntimeError("Cannot add " + left->typeName() + " and " + right->typeName(), loc);
 
         case TokenType::Minus:
-            if (li && ri) return Value::integer(li->value - ri->value);
+            if (li && ri) {
+                int64_t result;
+                if (!__builtin_sub_overflow(li->value, ri->value, &result)) return Value::integer(result);
+            }
+            if (leftInt && rightInt) return integerResult(*leftInt - *rightInt);
             if (lf && rf) return Value::floating(lf->value - rf->value);
-            if (li && rf) return Value::floating(li->value - rf->value);
-            if (lf && ri) return Value::floating(lf->value - ri->value);
+            if (leftInt && rf) return Value::floating(intToDouble(li, *leftInt) - rf->value);
+            if (lf && rightInt) return Value::floating(lf->value - intToDouble(ri, *rightInt));
             throw RuntimeError("Cannot subtract " + left->typeName() + " and " + right->typeName(), loc);
 
         case TokenType::Star:
-            if (li && ri) return Value::integer(li->value * ri->value);
+            if (li && ri) {
+                int64_t result;
+                if (!__builtin_mul_overflow(li->value, ri->value, &result)) return Value::integer(result);
+            }
+            if (leftInt && rightInt) return integerResult(*leftInt * *rightInt);
             if (lf && rf) return Value::floating(lf->value * rf->value);
-            if (li && rf) return Value::floating(li->value * rf->value);
-            if (lf && ri) return Value::floating(lf->value * ri->value);
+            if (leftInt && rf) return Value::floating(intToDouble(li, *leftInt) * rf->value);
+            if (lf && rightInt) return Value::floating(lf->value * intToDouble(ri, *rightInt));
             throw RuntimeError("Cannot multiply " + left->typeName() + " and " + right->typeName(), loc);
 
         case TokenType::Slash:
-            if (ri && ri->value == 0) throw RuntimeError("Division by zero", loc);
+            if (rightInt && *rightInt == 0) throw RuntimeError("Division by zero", loc);
             if (rf && rf->value == 0.0) throw RuntimeError("Division by zero", loc);
             if (li && ri) return Value::integer(li->value / ri->value);
+            if (leftInt && rightInt) return integerResult(*leftInt / *rightInt);
             if (lf && rf) return Value::floating(lf->value / rf->value);
-            if (li && rf) return Value::floating(li->value / rf->value);
-            if (lf && ri) return Value::floating(lf->value / ri->value);
+            if (leftInt && rf) return Value::floating(intToDouble(li, *leftInt) / rf->value);
+            if (lf && rightInt) return Value::floating(lf->value / intToDouble(ri, *rightInt));
             throw RuntimeError("Cannot divide " + left->typeName() + " and " + right->typeName(), loc);
 
         case TokenType::Percent:
             if (li && ri) {
                 if (ri->value == 0) throw RuntimeError("Modulo by zero", loc);
                 return Value::integer(li->value % ri->value);
+            }
+            if (leftInt && rightInt) {
+                if (*rightInt == 0) throw RuntimeError("Modulo by zero", loc);
+                return integerResult(*leftInt % *rightInt);
             }
             throw RuntimeError("Modulo requires integers", loc);
 
@@ -1069,6 +1125,7 @@ auto Evaluator::evalBinaryOp(TokenType op, const ValuePtr& left, const ValuePtr&
 
         case TokenType::LessThan:
             if (li && ri) return Value::boolean(li->value < ri->value);
+            if (leftInt && rightInt) return Value::boolean(*leftInt < *rightInt);
             if (lf && rf) return Value::boolean(lf->value < rf->value);
             if (ls && rs) return Value::boolean(ls->value < rs->value);
             if (lc && rc) return Value::boolean(lc->value < rc->value);
@@ -1076,6 +1133,7 @@ auto Evaluator::evalBinaryOp(TokenType op, const ValuePtr& left, const ValuePtr&
 
         case TokenType::GreaterThan:
             if (li && ri) return Value::boolean(li->value > ri->value);
+            if (leftInt && rightInt) return Value::boolean(*leftInt > *rightInt);
             if (lf && rf) return Value::boolean(lf->value > rf->value);
             if (ls && rs) return Value::boolean(ls->value > rs->value);
             if (lc && rc) return Value::boolean(lc->value > rc->value);
@@ -1083,6 +1141,7 @@ auto Evaluator::evalBinaryOp(TokenType op, const ValuePtr& left, const ValuePtr&
 
         case TokenType::LessEq:
             if (li && ri) return Value::boolean(li->value <= ri->value);
+            if (leftInt && rightInt) return Value::boolean(*leftInt <= *rightInt);
             if (lf && rf) return Value::boolean(lf->value <= rf->value);
             if (ls && rs) return Value::boolean(ls->value <= rs->value);
             if (lc && rc) return Value::boolean(lc->value <= rc->value);
@@ -1090,6 +1149,7 @@ auto Evaluator::evalBinaryOp(TokenType op, const ValuePtr& left, const ValuePtr&
 
         case TokenType::GreaterEq:
             if (li && ri) return Value::boolean(li->value >= ri->value);
+            if (leftInt && rightInt) return Value::boolean(*leftInt >= *rightInt);
             if (lf && rf) return Value::boolean(lf->value >= rf->value);
             if (ls && rs) return Value::boolean(ls->value >= rs->value);
             if (lc && rc) return Value::boolean(lc->value >= rc->value);
@@ -1110,8 +1170,14 @@ auto Evaluator::evalUnaryOp(TokenType op, const ValuePtr& operand,
                             SourceLocation loc) -> ValuePtr {
     switch (op) {
         case TokenType::Minus:
-            if (auto* i = std::get_if<IntValue>(&operand->data))
+            if (auto* i = std::get_if<IntValue>(&operand->data)) {
+                // -INT64_MIN doesn't fit in int64_t — promote rather than
+                // silently wrap/UB, same as the overflow-checked binary ops.
+                if (i->value == INT64_MIN) return Value::bigInteger(-mpz_class(static_cast<long>(i->value)));
                 return Value::integer(-i->value);
+            }
+            if (auto* bi = std::get_if<BigIntValue>(&operand->data))
+                return Value::bigInteger(-bi->value);
             if (auto* f = std::get_if<FloatValue>(&operand->data))
                 return Value::floating(-f->value);
             throw RuntimeError("Cannot negate " + operand->typeName(), loc);
@@ -1232,8 +1298,11 @@ auto Evaluator::matchPattern(const ast::Pattern& pattern, const ValuePtr& value)
         }
         else if constexpr (std::is_same_v<T, ast::LiteralPattern>) {
             if (pat.literal.type == TokenType::Integer) {
-                auto* iv = std::get_if<IntValue>(&value->data);
-                return iv && iv->value == std::stoll(pat.literal.value);
+                // mpz_class(string) handles literal patterns too big for
+                // int64_t the same way IntLiteral evaluation does; asInteger
+                // matches against either runtime representation of Integer.
+                auto valueInt = asInteger(value);
+                return valueInt && *valueInt == mpz_class(pat.literal.value);
             }
             if (pat.literal.type == TokenType::String) {
                 auto* sv = std::get_if<StringValue>(&value->data);
@@ -1270,6 +1339,15 @@ auto Evaluator::matchPattern(const ast::Pattern& pattern, const ValuePtr& value)
             }
             return true;
         }
+        else if constexpr (std::is_same_v<T, ast::RangePattern>) {
+            auto* rv = std::get_if<RangeValue>(&value->data);
+            if (!rv) return false;
+            auto startVal = rv->isChar ? Value::character(static_cast<char>(rv->start)) : Value::integer(rv->start);
+            auto endVal = rv->isChar ? Value::character(static_cast<char>(rv->end)) : Value::integer(rv->end);
+            if (!matchPattern(*pat.start, startVal)) return false;
+            if (!matchPattern(*pat.end, endVal)) return false;
+            return true;
+        }
         else if constexpr (std::is_same_v<T, ast::ListPattern>) {
             auto* lv = std::get_if<ListValue>(&value->data);
             if (!lv) return false;
@@ -1296,17 +1374,24 @@ auto Evaluator::matchPattern(const ast::Pattern& pattern, const ValuePtr& value)
                     if (atom->name == pat.name) return true;
                 }
 
-                // Match type names as type patterns (for runtime type checking)
-                if (pat.name == "String") return std::holds_alternative<StringValue>(value->data);
-                if (pat.name == "Int" || pat.name == "Integer") return std::holds_alternative<IntValue>(value->data);
-                if (pat.name == "Float") return std::holds_alternative<FloatValue>(value->data);
-                if (pat.name == "Bool") return std::holds_alternative<BoolValue>(value->data);
-                if (pat.name == "Atom") return std::holds_alternative<AtomValue>(value->data);
-                if (pat.name == "List") return std::holds_alternative<ListValue>(value->data);
-                if (pat.name == "Map") return std::holds_alternative<MapValue>(value->data);
-                if (pat.name == "Tuple") return std::holds_alternative<TupleValue>(value->data);
-                if (pat.name == "Range") return std::holds_alternative<RangeValue>(value->data);
-                if (pat.name == "Stream") return std::holds_alternative<StreamValue>(value->data);
+                // Match type names as type patterns (for runtime type checking).
+                // These `if (holds_alternative) return true;` rather than
+                // `return holds_alternative(...)` so that e.g. a bare `Integer`
+                // expression — which resolves to the Integer::parse namespace
+                // RecordValue, not an IntValue — still falls through to the
+                // record-typeName check below instead of failing outright.
+                if (pat.name == "String" && std::holds_alternative<StringValue>(value->data)) return true;
+                if ((pat.name == "Int" || pat.name == "Integer") &&
+                    (std::holds_alternative<IntValue>(value->data) ||
+                     std::holds_alternative<BigIntValue>(value->data))) return true;
+                if (pat.name == "Float" && std::holds_alternative<FloatValue>(value->data)) return true;
+                if (pat.name == "Bool" && std::holds_alternative<BoolValue>(value->data)) return true;
+                if (pat.name == "Atom" && std::holds_alternative<AtomValue>(value->data)) return true;
+                if (pat.name == "List" && std::holds_alternative<ListValue>(value->data)) return true;
+                if (pat.name == "Map" && std::holds_alternative<MapValue>(value->data)) return true;
+                if (pat.name == "Tuple" && std::holds_alternative<TupleValue>(value->data)) return true;
+                if (pat.name == "Range" && std::holds_alternative<RangeValue>(value->data)) return true;
+                if (pat.name == "Stream" && std::holds_alternative<StreamValue>(value->data)) return true;
                 // Match record type name
                 if (auto* rec = std::get_if<RecordValue>(&value->data)) {
                     if (rec->typeName == pat.name) return true;
