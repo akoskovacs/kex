@@ -365,7 +365,29 @@ auto Evaluator::registerListBuiltins() -> void {
         return Value::boolean(true);
     });
 
-    reg("sort", [this, getElements](std::vector<ValuePtr> args) -> ValuePtr {
+    auto compareVia = [this](const ValuePtr& a, const ValuePtr& b) -> std::string {
+        if (auto* ai = std::get_if<IntValue>(&a->data))
+            if (auto* bi = std::get_if<IntValue>(&b->data))
+                return ai->value < bi->value ? "Less" : (ai->value > bi->value ? "Greater" : "Equal");
+        if (auto* af = std::get_if<FloatValue>(&a->data))
+            if (auto* bf = std::get_if<FloatValue>(&b->data))
+                return af->value < bf->value ? "Less" : (af->value > bf->value ? "Greater" : "Equal");
+        if (auto* as = std::get_if<StringValue>(&a->data))
+            if (auto* bs = std::get_if<StringValue>(&b->data))
+                return as->value < bs->value ? "Less" : (as->value > bs->value ? "Greater" : "Equal");
+        if (auto* ac = std::get_if<CharValue>(&a->data))
+            if (auto* bc = std::get_if<CharValue>(&b->data))
+                return ac->value < bc->value ? "Less" : (ac->value > bc->value ? "Greater" : "Equal");
+        if (auto* rec = std::get_if<RecordValue>(&a->data)) {
+            try {
+                auto r = callFunction(rec->typeName + "::compare", {a, b}, {}, {});
+                if (auto* atom = std::get_if<AtomValue>(&r->data)) return atom->name;
+            } catch (...) {}
+        }
+        return "Equal";
+    };
+
+    reg("sort", [this, getElements, compareVia](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.empty()) return Value::list({});
         auto elems = getElements(args[0]);
         if (elems.empty()) return Value::list({});
@@ -384,60 +406,30 @@ auto Evaluator::registerListBuiltins() -> void {
         }
 
         // 1-arg form: natural order for primitives, or Comparable.compare for records
-        SourceLocation loc{};
         std::stable_sort(elems.begin(), elems.end(),
-            [this, &loc](const ValuePtr& a, const ValuePtr& b) {
-                if (auto* ai = std::get_if<IntValue>(&a->data))
-                    if (auto* bi = std::get_if<IntValue>(&b->data)) return ai->value < bi->value;
-                if (auto* af = std::get_if<FloatValue>(&a->data))
-                    if (auto* bf = std::get_if<FloatValue>(&b->data)) return af->value < bf->value;
-                if (auto* as = std::get_if<StringValue>(&a->data))
-                    if (auto* bs = std::get_if<StringValue>(&b->data)) return as->value < bs->value;
-                if (auto* ac = std::get_if<CharValue>(&a->data))
-                    if (auto* bc = std::get_if<CharValue>(&b->data)) return ac->value < bc->value;
-                // Comparable.compare fallback: try TypeName::compare (UFCS mangled)
-                if (auto* rec = std::get_if<RecordValue>(&a->data)) {
-                    auto mangled = rec->typeName + "::compare";
-                    try {
-                        auto result = callFunction(mangled, {a, b}, {}, loc);
-                        if (auto* atom = std::get_if<AtomValue>(&result->data))
-                            return atom->name == "Less";
-                    } catch (...) {}
-                }
-                return false;
+            [&compareVia](const ValuePtr& a, const ValuePtr& b) {
+                return compareVia(a, b) == "Less";
             });
         return Value::list(std::move(elems));
     });
 
-    reg("min", [getElements](std::vector<ValuePtr> args) -> ValuePtr {
+    reg("min", [this, getElements, compareVia](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.empty()) return Value::none();
         auto elems = getElements(args[0]);
         if (elems.empty()) return Value::none();
         auto result = elems[0];
-        for (size_t i = 1; i < elems.size(); i++) {
-            if (auto* ri = std::get_if<IntValue>(&result->data))
-                if (auto* ei = std::get_if<IntValue>(&elems[i]->data))
-                    if (ei->value < ri->value) { result = elems[i]; continue; }
-            if (auto* rc = std::get_if<CharValue>(&result->data))
-                if (auto* ec = std::get_if<CharValue>(&elems[i]->data))
-                    if (ec->value < rc->value) result = elems[i];
-        }
+        for (size_t i = 1; i < elems.size(); i++)
+            if (compareVia(elems[i], result) == "Less") result = elems[i];
         return result;
     });
 
-    reg("max", [getElements](std::vector<ValuePtr> args) -> ValuePtr {
+    reg("max", [this, getElements, compareVia](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.empty()) return Value::none();
         auto elems = getElements(args[0]);
         if (elems.empty()) return Value::none();
         auto result = elems[0];
-        for (size_t i = 1; i < elems.size(); i++) {
-            if (auto* ri = std::get_if<IntValue>(&result->data))
-                if (auto* ei = std::get_if<IntValue>(&elems[i]->data))
-                    if (ei->value > ri->value) { result = elems[i]; continue; }
-            if (auto* rc = std::get_if<CharValue>(&result->data))
-                if (auto* ec = std::get_if<CharValue>(&elems[i]->data))
-                    if (ec->value > rc->value) result = elems[i];
-        }
+        for (size_t i = 1; i < elems.size(); i++)
+            if (compareVia(elems[i], result) == "Greater") result = elems[i];
         return result;
     });
 

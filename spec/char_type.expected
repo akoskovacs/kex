@@ -13,7 +13,6 @@ false
 true
 false
 None
-abc
 string pattern matches string value
 char pattern matches char value
 true

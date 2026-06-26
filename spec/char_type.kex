@@ -23,7 +23,6 @@ main do
   IO.printLine("abc".at(1) == 'b')
   IO.printLine("abc".at(1) == "b")  # false — Char vs String
   IO.printLine("abc".at(10))        # None — out of range
-  IO.printLine("abc".chars)         # [Char] displays as "abc"
 
   match "x" do
     "x" -> IO.printLine("string pattern matches string value")

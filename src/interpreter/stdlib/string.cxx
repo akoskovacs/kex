@@ -36,17 +36,6 @@ auto Evaluator::registerStringBuiltins() -> void {
         return Value::boolean(c->value >= '0' && c->value <= '9');
     });
 
-    // String.chars -> [Char]
-    reg("chars", [](std::vector<ValuePtr> args) -> ValuePtr {
-        if (args.empty()) return Value::list({});
-        auto* str = std::get_if<StringValue>(&args[0]->data);
-        if (!str) return Value::list({});
-        std::vector<ValuePtr> elems;
-        elems.reserve(str->value.size());
-        for (char c : str->value) elems.push_back(Value::character(c));
-        return Value::list(std::move(elems));
-    });
-
     reg("startsWith?", [](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.size() < 2) return Value::boolean(false);
         auto* str = std::get_if<StringValue>(&args[0]->data);

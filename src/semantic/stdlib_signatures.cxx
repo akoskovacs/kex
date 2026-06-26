@@ -140,7 +140,6 @@ auto SignatureTable::withStdlib() -> SignatureTable {
     sig("reverse",    {Type::list(genA())}, Type::list(genA()));
     sig("startsWith?", {Type::string(), Type::string()}, Type::boolean());
     sig("endsWith?",   {Type::string(), Type::string()}, Type::boolean());
-    sig("chars",       {Type::string()}, Type::list(Type::charT()));
     // IO — accept any value; result is Unit (used for side-effect checking)
     sig("printLine", {genA()}, Type::unit());
     sig("print",     {genA()}, Type::unit());
