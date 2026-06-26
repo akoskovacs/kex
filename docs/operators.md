@@ -43,6 +43,7 @@ No pipe operator (`|>`) either — UFCS covers chaining: `input.parse.transform.
 | `..` | Range (`1..10`) |
 | `...` | Spread in Block<[A]> |
 | `!` (suffix) | Mutating call on var |
+| `~` (prefix) | Curry / partial application (`~func(args)`, `~(op)`) |
 
 ## Overriding
 

@@ -87,6 +87,7 @@ private:
     auto parseSpawnExpr() -> ast::ExprPtr;
     auto parseLambda() -> ast::ExprPtr;
     auto parseShorthandLambda() -> ast::ExprPtr;
+    auto parseCurryExpr() -> ast::ExprPtr;
     auto parseListExpr() -> ast::ExprPtr;
     auto parseMapOrBlock() -> ast::ExprPtr;
     auto parseTupleOrGrouped() -> ast::ExprPtr;

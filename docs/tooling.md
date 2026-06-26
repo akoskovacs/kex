@@ -59,8 +59,9 @@ kex>
 ## CLI
 
 ```
-kex <file.kex>       # compile and run
-kex build            # compile to WASM
-kex test             # run tests
-kex repl             # start REPL (or just `kex` with no args)
+kex <file.kex>           # type-check and run
+kex <file.kex> --no-check  # skip type checking and run directly
+kex repl                 # start REPL (or just `kex` with no args)
 ```
+
+`kex run` gates on type checking by default. Use `--no-check` to skip the type-checker (useful when iterating on code that type-checks correctly at runtime but has incomplete annotations).

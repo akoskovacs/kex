@@ -77,6 +77,7 @@ enum class TokenType {
     Question,     // ?
     Slash,        // /
     Star,         // *
+    Tilde,        // ~
     Underscore,   // _
     HashLBracket, // #[
 

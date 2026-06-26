@@ -156,6 +156,29 @@ let empty?(list: [A]) -> Bool = ...
 let adult?({ age }) = age >= 18
 ```
 
+## Currying and Partial Application
+
+`~` creates a partially applied function. Bound arguments fill left-to-right; `_` is an explicit placeholder for a specific position. Chained `(args)` groups that fully saturate the function call it immediately.
+
+```kex
+let add(a, b) = a + b
+let multiply(a, b) = a * b
+
+let inc    = ~add(1)           # {|b| add(1, b)}
+let double = ~multiply(2)      # {|b| multiply(2, b)}
+
+[1, 2, 3].map(~multiply(10))           # [10, 20, 30]
+[1, 2, 3, 4, 5].reduce(0, ~(+))        # 15 — operator as a two-arg function
+
+let sub5 = ~(-)(_, 5)                  # {|a| a - 5}
+sub5(20)                               # 15
+
+~(+)(2)(3)                             # 5 — chained, fully applied inline
+~add(3)(4)                             # 7
+```
+
+`~(op)` lifts any built-in operator into a function value. `_` can appear multiple times; each one becomes a positional parameter filled left-to-right.
+
 ## Closures
 
 ```kex

@@ -16,7 +16,7 @@ end
 
 ## Rules
 
-- Pure functions cannot call foul functions — compile error
+- Pure functions cannot call foul functions — enforced at semantic analysis (compile-time error)
 - Foul functions can call anything
 - `main` is implicitly foul
 
@@ -58,19 +58,4 @@ end
 
 ## Build System Integration
 
-The compiler infers requirements (IO, Process, etc.) from usage. The build config declares target capabilities:
-
-```
-# build config
-target: wasm
-capabilities: [IO]
-```
-
-Mismatch = compile error. Optional pragma for documentation:
-
-```kex
-#[Require Process, IO]
-module MyServer do
-  ...
-end
-```
+Planned: the compiler will infer IO/Process requirements from usage and let the build config declare target capabilities (e.g. `target: wasm, capabilities: [IO]`), producing a compile error on mismatch. Not yet implemented — currently `foul` tracking is enforced at the semantic pass but capability declarations are not read.

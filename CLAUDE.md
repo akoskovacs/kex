@@ -32,4 +32,4 @@ Run: `./build/kex <file.kex>`
 
 ## Current Status
 
-Lexer, AST, and parser are complete. All 17 example files parse successfully. Next: semantic analysis or codegen.
+Lexer, parser, AST, semantic analysis, and tree-walk interpreter are complete. Type checker runs by default (`--no-check` to skip). Traits, currying (`~`), arbitrary-precision integers (GMP), and a rich stdlib are implemented. Next: codegen (BEAM/WASM) or process runtime.

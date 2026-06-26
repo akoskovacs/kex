@@ -71,6 +71,7 @@ auto tokenTypeName(TokenType type) -> std::string_view {
         case TokenType::Question: return "?";
         case TokenType::Slash: return "/";
         case TokenType::Star: return "*";
+        case TokenType::Tilde: return "~";
         case TokenType::Underscore: return "_";
         case TokenType::HashLBracket: return "#[";
         case TokenType::LowerIdent: return "LowerIdent";

@@ -1417,6 +1417,40 @@ auto TypeChecker::inferExpr(const ast::Expr& expr) -> TypePtr {
             }
             return Type::func({paramType}, resolve(resultType));
         }
+        else if constexpr (std::is_same_v<T, ast::CurryPlaceholder>) {
+            return Type::unknown();
+        }
+        else if constexpr (std::is_same_v<T, ast::CurryExpr>) {
+            // Infer bound args for side-effect tracking.
+            int boundCount = 0, openCount = 0;
+            for (const auto& group : node.argGroups)
+                for (const auto& arg : group)
+                    if (std::holds_alternative<ast::CurryPlaceholder>(arg->kind))
+                        openCount++;
+                    else { inferExpr(*arg); boundCount++; }
+
+            // Determine arity to compute remaining open param count.
+            int arity = -1;
+            if (node.isOperator) {
+                arity = 2;
+            } else {
+                auto usit = m_userSignatures.find(node.name);
+                if (usit != m_userSignatures.end() && !usit->second.empty())
+                    arity = static_cast<int>(usit->second[0].params.size());
+                else if (auto* sigs = m_stdlib.lookup(node.name); sigs && !sigs->empty())
+                    arity = static_cast<int>((*sigs)[0].params.size());
+            }
+
+            // Remaining params = explicit placeholders + unfilled arity slots.
+            int remaining = openCount;
+            if (arity >= 0) remaining = std::max(openCount, arity - boundCount);
+
+            // Build Func type with `remaining` fresh TypeVar params.
+            if (remaining <= 0) return freshTypeVar(); // fully applied
+            std::vector<TypePtr> params;
+            for (int i = 0; i < remaining; i++) params.push_back(freshTypeVar());
+            return Type::func(std::move(params), freshTypeVar());
+        }
         else if constexpr (std::is_same_v<T, ast::ThisExpr>) {
             // Inside a make block, `this` / `@field` has the record type.
             if (!m_currentMakeType.empty()) return Type::named(m_currentMakeType);

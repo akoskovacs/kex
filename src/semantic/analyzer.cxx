@@ -458,6 +458,12 @@ auto Analyzer::analyzeExpr(const ast::Expr& expr) -> void {
         else if constexpr (std::is_same_v<T, ast::SpreadExpr>) {
             if (node.inner) analyzeExpr(*node.inner);
         }
+        else if constexpr (std::is_same_v<T, ast::CurryExpr>) {
+            for (const auto& group : node.argGroups)
+                for (const auto& arg : group)
+                    if (arg && !std::holds_alternative<ast::CurryPlaceholder>(arg->kind))
+                        analyzeExpr(*arg);
+        }
         // Literals and other simple nodes need no analysis
     }, expr.kind);
 }

@@ -1215,6 +1215,11 @@ auto Parser::parsePrimary() -> ast::ExprPtr {
         return parseShorthandLambda();
     }
 
+    // Curry / partial application: ~func(args) or ~(op)(args)
+    if (check(TokenType::Tilde)) {
+        return parseCurryExpr();
+    }
+
     // List
     if (check(TokenType::LBracket)) {
         return parseListExpr();
@@ -2549,6 +2554,66 @@ auto Parser::isAtExprStart() const -> bool {
         default:
             return false;
     }
+}
+
+auto Parser::parseCurryExpr() -> ast::ExprPtr {
+    auto loc = currentLocation();
+    expect(TokenType::Tilde, "Expected '~'");
+
+    auto expr = std::make_unique<ast::Expr>();
+    expr->location = loc;
+
+    std::string name;
+    bool isOperator = false;
+
+    if (check(TokenType::LParen)) {
+        // ~(op) form
+        advance(); // consume '('
+        if (check(TokenType::Plus) || check(TokenType::Minus) || check(TokenType::Star) ||
+            check(TokenType::Slash) || check(TokenType::Percent) || check(TokenType::EqEq) ||
+            check(TokenType::NotEq) || check(TokenType::LessThan) || check(TokenType::LessEq) ||
+            check(TokenType::GreaterThan) || check(TokenType::GreaterEq)) {
+            name = std::string(tokenTypeName(advance().type));
+            isOperator = true;
+        } else {
+            error("Expected operator inside '~(...)'");
+        }
+        expect(TokenType::RParen, "Expected ')' after operator");
+    } else if (check(TokenType::LowerIdent)) {
+        name = advance().value;
+        isOperator = false;
+    } else {
+        error("Expected function name or operator after '~'");
+    }
+
+    // Parse all trailing (args) groups greedily
+    auto parseCurryArgGroup = [&]() -> std::vector<ast::ExprPtr> {
+        std::vector<ast::ExprPtr> args;
+        expect(TokenType::LParen, "Expected '('");
+        if (!check(TokenType::RParen)) {
+            do {
+                auto argExpr = std::make_unique<ast::Expr>();
+                argExpr->location = currentLocation();
+                if (check(TokenType::Underscore)) {
+                    advance();
+                    argExpr->kind = ast::CurryPlaceholder{};
+                } else {
+                    argExpr = parseExpr();
+                }
+                args.push_back(std::move(argExpr));
+            } while (match(TokenType::Comma));
+        }
+        expect(TokenType::RParen, "Expected ')'");
+        return args;
+    };
+
+    std::vector<std::vector<ast::ExprPtr>> argGroups;
+    while (check(TokenType::LParen)) {
+        argGroups.push_back(parseCurryArgGroup());
+    }
+
+    expr->kind = ast::CurryExpr{name, isOperator, std::move(argGroups)};
+    return expr;
 }
 
 } // namespace kex

@@ -944,6 +944,94 @@ auto Evaluator::eval(const ast::Expr& expr) -> ValuePtr {
         else if constexpr (std::is_same_v<T, ast::BlockExpr>) {
             return evalBody(node.body);
         }
+        else if constexpr (std::is_same_v<T, ast::CurryPlaceholder>) {
+            throw RuntimeError("CurryPlaceholder evaluated outside curry context", expr.location);
+        }
+        else if constexpr (std::is_same_v<T, ast::CurryExpr>) {
+            struct Slot { bool isOpen; ValuePtr value; };
+            std::vector<Slot> slots;
+            for (const auto& group : node.argGroups)
+                for (const auto& argExpr : group)
+                    if (std::holds_alternative<ast::CurryPlaceholder>(argExpr->kind))
+                        slots.push_back({true, nullptr});
+                    else
+                        slots.push_back({false, eval(*argExpr)});
+
+            auto fnName = node.name;
+
+            // Determine arity: operators are always 2; user functions from defs.
+            int arity = -1;
+            if (node.isOperator) {
+                arity = 2;
+            } else {
+                auto it = m_functionDefs.find(fnName);
+                if (it != m_functionDefs.end() && !it->second.empty()) {
+                    const auto& firstDef = *it->second[0];
+                    if (!firstDef.clauses.empty())
+                        arity = static_cast<int>(firstDef.clauses[0].params.size());
+                }
+            }
+
+            int boundCount = static_cast<int>(slots.size());
+            int openCount = 0;
+            for (const auto& s : slots) if (s.isOpen) openCount++;
+
+            // Fully applied: no open slots and we have at least arity args.
+            bool fullyApplied = (openCount == 0) &&
+                                (arity >= 0 ? boundCount >= arity : boundCount > 0);
+
+            if (fullyApplied) {
+                std::vector<ValuePtr> args;
+                for (const auto& s : slots) args.push_back(s.value);
+                if (node.isOperator && args.size() >= 2) {
+                    static const std::unordered_map<std::string, TokenType> opToks = {
+                        {"+", TokenType::Plus}, {"-", TokenType::Minus},
+                        {"*", TokenType::Star}, {"/", TokenType::Slash},
+                        {"%", TokenType::Percent}, {"==", TokenType::EqEq},
+                        {"!=", TokenType::NotEq}, {"<", TokenType::LessThan},
+                        {"<=", TokenType::LessEq}, {">", TokenType::GreaterThan},
+                        {">=", TokenType::GreaterEq},
+                    };
+                    auto it2 = opToks.find(fnName);
+                    if (it2 != opToks.end())
+                        return evalBinaryOp(it2->second, args[0], args[1], expr.location);
+                }
+                return callFunction(fnName, std::move(args), {}, {});
+            }
+
+            // Map operator name to TokenType for evalBinaryOp dispatch.
+            static const std::unordered_map<std::string, TokenType> opTokens = {
+                {"+", TokenType::Plus}, {"-", TokenType::Minus},
+                {"*", TokenType::Star}, {"/", TokenType::Slash},
+                {"%", TokenType::Percent}, {"==", TokenType::EqEq},
+                {"!=", TokenType::NotEq}, {"<", TokenType::LessThan},
+                {"<=", TokenType::LessEq}, {">", TokenType::GreaterThan},
+                {">=", TokenType::GreaterEq},
+            };
+            auto opIt = opTokens.find(fnName);
+            bool isOp = node.isOperator && opIt != opTokens.end();
+            TokenType opToken = isOp ? opIt->second : TokenType::Plus;
+
+            // Partial: return a lambda that fills open slots (or appends) then calls.
+            auto lambda = std::make_shared<Value>();
+            lambda->data = FunctionValue{"~" + fnName,
+                [this, fnName, slots, isOp, opToken](std::vector<ValuePtr> fillArgs) mutable -> ValuePtr {
+                    std::vector<ValuePtr> finalArgs;
+                    size_t fillIdx = 0;
+                    for (const auto& s : slots) {
+                        if (s.isOpen && fillIdx < fillArgs.size())
+                            finalArgs.push_back(fillArgs[fillIdx++]);
+                        else if (!s.isOpen)
+                            finalArgs.push_back(s.value);
+                    }
+                    while (fillIdx < fillArgs.size())
+                        finalArgs.push_back(fillArgs[fillIdx++]);
+                    if (isOp && finalArgs.size() >= 2)
+                        return evalBinaryOp(opToken, finalArgs[0], finalArgs[1], {});
+                    return callFunction(fnName, std::move(finalArgs), {}, {});
+                }};
+            return lambda;
+        }
         else if constexpr (std::is_same_v<T, ast::LoopExpr>) {
             // `loop\n...end` runs forever — the only ways out are `break`
             // (BreakException), `return` (ReturnException, which unwinds to

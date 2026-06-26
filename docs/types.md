@@ -37,54 +37,54 @@ let identity(a: A) = a
 let map(list: [A], f: A -> B) -> [B] = ...
 ```
 
-## Type Hierarchy (Traits)
+## Traits
 
-Type contracts are declared with `trait`, not nominal `type X < Y` blocks —
-see `plan-effects-traits.md` for the full design. A trait lists required
-method signatures (`:`); a type opts in by implementing it in a `make` block,
-not by declaring a parent on the type itself:
+Traits declare type contracts. A trait lists required method signatures; default implementations use `let`. Types opt in via `make X implement: Trait do`.
 
 ```kex
 trait Comparable do
   compare : This -> Comparison
 end
 
-trait Hashable do
-  hash : This -> Int
+trait Describable do
+  let describe = "a ${this.to(String)}"   # default — overridable
 end
 
-make Point implement: Comparable, Hashable do
-  let compare(other) -> Comparison = ...
-  let hash -> Int = ...
+make Point implement: Comparable do
+  let compare(other) -> Comparison do
+    if @x != other.x then @x < other.x then Less else Greater
+    elif @y < other.y then Less
+    elif @y > other.y then Greater
+    else Equal
+    end
+  end
 end
 ```
 
-Built-in numeric traits (`Number`, `Integer`, `Float`) work the same way, but
-membership is structural/built-in rather than declared via `make implement:`
-— every sized integer type (`Byte`, `Int8`..`UInt64`) and the
-arbitrary-precision `Integer` type itself satisfy `Integer` (and
-transitively `Number`); `Float32`/`Float64` satisfy `Float` (and `Number`)
-the same way. `Integer` is unusual in that it's both the trait name *and*
-one of its own concrete members — see `type-system-plan.md`'s Numeric Tower
-section for the full tower (`Number` / `Integer` / `Float` / sized types /
-the deferred `Rational`/`Decimal`):
+- `This` — the concrete implementing type (type-level); `this` — the instance (value-level)
+- `let name(...) = ...` inside a `trait` block is a default implementation, overridable in `make`
+- A type can implement multiple traits: `make X implement: Comparable, Describable do`
+- No diamond problem — trait membership is structural, not class-style inheritance
+
+### Built-in Traits
+
+| Trait | Satisfied by |
+|-------|-------------|
+| `Number` | Any integer or float type |
+| `Integer` | `Integer` (arbitrary-precision) and all sized int types |
+| `Float` | `Float32`, `Float64` |
+| `Comparable` | Any type with `make X implement: Comparable` |
+| `Equatable` | Any type with `make X implement: Equatable` |
+
+### `Comparison` Type
+
+`compare` returns a `Comparison` value — a built-in sum type:
 
 ```kex
-Int8.is?(Integer)      # true
-Int8.is?(Number)       # true
-Float32.is?(Float)     # true
-Float32.is?(Integer)   # false
-Integer.is?(Integer)   # true
+type Comparison = Less | Equal | Greater
 ```
 
-- Required methods (`name : type`) must be implemented; a `let name(...) = ...`
-  inside the `trait` block itself is a default implementation, overridable
-  by `make`.
-- `This` resolves to the concrete implementing type, in both trait
-  signatures and `make` blocks; `this` is the value-level instance.
-- No nominal multiple-inheritance/diamond concern — trait membership is
-  structural (`TraitRegistry.satisfies`), not class-style parent chains, so
-  there's nothing to disambiguate when a type implements several traits.
+`sort`, `min`, and `max` all use `Comparison` dispatch for user types.
 
 ## Sum Types (Enums)
 

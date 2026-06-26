@@ -1,0 +1,37 @@
+let add(a, b) = a + b
+let multiply(a, b) = a * b
+let greet(greeting, name) = "${greeting}, ${name}!"
+
+main do
+  # partial application of named functions
+  let inc = ~add(1)
+  IO.printLine(inc(5))
+  IO.printLine(inc(10))
+
+  let double = ~multiply(2)
+  IO.printLine(double(7))
+  IO.printLine([1, 2, 3].map(~multiply(10)))
+
+  # placeholder for explicit arg positioning
+  let sub5 = ~(-)(_, 5)
+  IO.printLine(sub5(20))
+
+  let div2 = ~(/)(_, 2)
+  IO.printLine(div2(10))
+
+  # operators as binary functions
+  let sum = [1, 2, 3, 4, 5].reduce(0, ~(+))
+  IO.printLine(sum)
+
+  let product = [1, 2, 3, 4, 5].reduce(1, ~(*))
+  IO.printLine(product)
+
+  # chained — fully applied inline
+  IO.printLine(~(+)(2)(3))
+  IO.printLine(~add(3)(4))
+
+  # strings
+  let hello = ~greet("Hello")
+  IO.printLine(hello("Alice"))
+  IO.printLine(hello("Bob"))
+end

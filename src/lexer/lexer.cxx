@@ -135,6 +135,8 @@ auto Lexer::nextToken() -> Token {
             skipComment();
             return nextToken();
 
+        case '~': return makeToken(TokenType::Tilde);
+
         case '%':
             if (isLowerAlpha(peek())) return lexSpliceIdent();
             return makeToken(TokenType::Percent);

@@ -309,6 +309,14 @@ struct ThenElseExpr {
     ExprPtr elseExpr;
 };
 
+struct CurryPlaceholder {};
+
+struct CurryExpr {
+    std::string name;       // function or operator name ("add", "+", etc.)
+    bool isOperator;        // true for ~(+), ~(*), etc.
+    std::vector<std::vector<ExprPtr>> argGroups; // each (args) paren group
+};
+
 struct BlockExpr {
     std::vector<ExprPtr> body;
 };
@@ -353,7 +361,9 @@ struct Expr {
         SpreadExpr,
         TrailingIf,
         ThenElseExpr,
-        BlockExpr
+        BlockExpr,
+        CurryPlaceholder,
+        CurryExpr
     > kind;
 };
 

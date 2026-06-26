@@ -155,19 +155,20 @@ type ParseError = InvalidFormat(String) | Overflow | EmptyInput
 
 let parseInt(s: String) -> Result<Int, ParseError> do
   return Error(EmptyInput) if s.empty?
-
-  return Integer.parse(s).mapError { |_| InvalidFormat(s) }
+  match Integer.parse(s) do
+    Ok(n)    -> Ok(n)
+    Error(_) -> Error(InvalidFormat(s))
+  end
 end
 
 let parsePort(s: String) -> Result<Int, ParseError> do
   let n = parseInt(s)?
   return Error(Overflow) if n > 65535
-
   return Ok(n)
 end
 
-foul let loadConfig(path: String) -> Result<Config, AppError> do
-  let content = IO.read(path)?
+foul loadConfig(path: String) -> Result<Config, AppError> do
+  let content = IO.readFile(path)?
   let parsed = Config.parse(content)?
   let port = parsePort(parsed.get("port"))?
   return Ok(Config { port: port, host: parsed.get("host") })
@@ -181,7 +182,7 @@ Functions are pure unless marked `foul`. Pure code cannot call foul code, so sid
 ```rb
 let compute(x: Int) = x * 2 + 1
 
-foul let readConfig(path: String) do
+foul readConfig(path: String) do
   return File.read(path)
 end
 
@@ -227,30 +228,95 @@ let squaresOfMultiplesOfThree = (1..100)
   .take(5)
 ```
 
-### DSL-Friendly Builders
+### Currying and Partial Application
 
-Kex is intended to make embedded DSLs feel native. `Block<[A]>` lets a function collect each expression in a block into a list, which is useful for document builders, UI descriptions, tests, and routes.
+`~` creates a partially applied function. Bound arguments fill left-to-right; `_` marks an explicit open slot for a specific position. Chained `(args)` groups that fully saturate the function call it immediately — no extra wrapping.
 
 ```rb
-module App do
-  using Http do
-    let router = Router.Config {}
-      .use(&logRequests)
-      .get("/", &home)
-      .get("/users", &listUsers)
-      .post("/users", &createUser)
+let add(a, b) = a + b
+let multiply(a, b) = a * b
 
-    let createUser(req: Request) -> Response do
-      match req.body do
-        Just(body) -> do
-          match UserService.create(body) do
-            Ok(user) -> Response.json(user.to(String))
-            Error(e) -> Response { status: 400, body: e.message }
-          end
-        end
-        None -> Response { status: 400, body: "Body required" }
-      end
+let inc    = ~add(1)              # {|b| add(1, b)}
+let double = ~multiply(2)         # {|b| multiply(2, b)}
+
+[1, 2, 3].map(~multiply(10))      # [10, 20, 30]
+
+(1..100).reduce(0, ~(+))          # 5050 — sum of 1 to 100
+
+let fact(n) = (1..n).reduce(1, ~(*))
+fact(10)                           # 3628800
+
+let sub5 = ~(-)(_, 5)             # {|a| a - 5}
+sub5(20)                          # 15
+
+~(+)(2)(3)                        # 5 — chained, fully applied inline
+```
+
+### Traits
+
+Traits declare required methods and can provide default implementations. Implementing types get the defaults for free.
+
+```rb
+trait Shape do
+  area      : () -> Float
+  perimeter : () -> Float
+
+  let describe = "area=${this.area}, perimeter=${this.perimeter}"
+end
+
+record Circle do
+  radius : Float
+end
+
+record Rectangle do
+  width  : Float
+  height : Float
+end
+
+make Circle, implement: Shape do
+  let area      = Math.PI * @radius * @radius
+  let perimeter = 2.0 * Math.PI * @radius
+end
+
+make Rectangle, implement: Shape do
+  let area      = @width * @height
+  let perimeter = 2.0 * (@width + @height)
+  let describe  = "Rectangle ${@width}x${@height} (area=${this.area})"  # override default
+end
+
+let shapes = [
+  Circle { radius: 5.0 },
+  Rectangle { width: 4.0, height: 6.0 },
+]
+
+shapes.each { |s| IO.printLine(s.describe) }
+# area=78.53981633974483, perimeter=31.41592653589793
+# Rectangle 4.0x6.0 (area=24.0)
+```
+
+### DSL-Friendly Builders
+
+Kex is intended to make embedded DSLs feel native. Block arguments and `do |x| ... end` syntax let library code read like built-in language constructs.
+
+```rb
+let app = Http.routes do
+  middleware &logRequests
+  middleware &authenticate
+
+  get "/" do |req|
+    Response.ok("Welcome")
+  end
+
+  get "/users/:id" do |req|
+    match UserService.find(req.params.id) do
+      Just(user) -> Response.json(user)
+      None       -> Response.notFound("user not found")
     end
+  end
+
+  post "/users" do |req|
+    let user = UserService.create(req.body)?
+    Response.created(user)
   end
 end
 ```
@@ -343,6 +409,7 @@ Requires CMake 3.20+ and a C++20 compiler. Readline is optional.
 Good starting points:
 
 - `examples/basics.kex` - core syntax
+- `examples/traits.kex` - Shape trait, required/default/overridden methods, multiple traits
 - `examples/vectors_advanced.kex` - records, static constructors, UFCS methods
 - `examples/streams.kex` - lazy ranges and streams
 - `examples/html_dsl.kex` - DSL-oriented blocks
@@ -400,19 +467,24 @@ Working today:
 
 - Lexer, parser, AST, semantic analysis, and tree-walk evaluation
 - Records, sum types, functions, lambdas, pattern matching, destructuring
-- Lists, maps, ranges, streams, strings, numbers, optional values, result values
+- Lists, maps, ranges, streams, strings, chars, numbers, optional values, result values
 - UFCS, `make` dispatch, `to` conversion convention, operator overloading
 - `@field`/`@method(...)` shorthand for `this` inside `make` blocks
-- `foul` purity boundaries, and local `var` mutation enforced at runtime (`let` bindings reject `=` and `!`)
-- Type system: arbitrary-precision `Integer` (GMP), numeric tower, type-directed dispatch, traits
+- `foul` purity boundaries, and local `var` mutation enforced at runtime
+- Traits: `trait ... do end`, `make X implement: Trait do end`, `Comparable`, `Equatable`
+- Currying and partial application with `~func(args)`, `~(op)`, and `_` placeholders
+- Type checker active by default (`kex run` gates on type checking; `--no-check` to skip)
+- Stdlib type signatures, trait-constrained overload resolution, lambda type inference
+- Arbitrary-precision `Integer` (GMP-backed), numeric tower, match exhaustiveness checking
+- Rich stdlib: `uniq`, `partition`, `indexOf`, `flatMap`, `contains?`, `min`/`max` returning `Optional`, char predicates (`digit?`, `alpha?`, `space?`), and more
 - REPL with optional readline support
 
 Planned or incomplete:
 
 - Bytecode VM or WASM codegen
-- More complete namespace/import resolution
-- Generic type inference
 - Full process/actor runtime
+- `is?` / `as` type introspection and explicit conversion
+- Namespace/import resolution beyond `using` blocks
 - Compiled metaprogramming beyond the parser/design sketch
 
 ## License
