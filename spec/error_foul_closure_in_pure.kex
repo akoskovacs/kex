@@ -1,0 +1,12 @@
+# IO inside a closure is also a purity violation when the enclosing
+# function is pure.
+let process(nums) do
+  nums.map { |n|
+    IO.printLine(n)
+    n * 2
+  }
+end
+
+main do
+  process([1, 2, 3])
+end

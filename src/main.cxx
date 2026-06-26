@@ -409,6 +409,19 @@ int main(int argc, char* argv[]) {
     auto source = readFile(filepath);
     if (source.empty()) return 1;
 
+    // Honour `# kex: no-check` pragma in the first few lines — any file that
+    // contains it is treated as if --no-check was passed on the command line.
+    {
+        std::istringstream ss(source);
+        std::string line;
+        for (int ln = 0; ln < 10 && std::getline(ss, line); ++ln) {
+            if (line.find("# kex: no-check") != std::string::npos) {
+                skipCheck = true;
+                break;
+            }
+        }
+    }
+
     // Everything after the script path is the script's own argument list,
     // exposed to Kex code via `main(args) do ... end`.
     std::vector<std::string> scriptArgs;

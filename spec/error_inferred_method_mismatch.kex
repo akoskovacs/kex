@@ -1,0 +1,6 @@
+# Method call on a TypeVar param constrains it:
+# s.split(",") requires s : String, so passing Integer is a compile error.
+let firstWord(s) = s.split(",")
+main do
+  IO.printLine(firstWord(42))
+end

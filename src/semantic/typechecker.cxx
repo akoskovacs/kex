@@ -74,6 +74,8 @@ auto TypeChecker::check(const ast::Program& program,
     // Note: no "Float" entry — it's not a concrete Type, only a trait
     // name (TraitRegistry, phase 3), satisfied by Float32 and Float64.
 
+    registerTraits(program);
+    registerRecordFields(program);
     registerDeclaredSignatures(program);
     preRegisterFunctionSigs(program);
 
@@ -82,6 +84,22 @@ auto TypeChecker::check(const ast::Program& program,
     }
 
     popScope();
+}
+
+auto TypeChecker::registerRecordFields(const ast::Program& program) -> void {
+    std::unordered_map<std::string, TypePtr> noGenerics;
+    for (const auto& item : program.items) {
+        std::visit([&](const auto& node) {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, std::unique_ptr<ast::RecordDef>>) {
+                auto& fields = m_recordFields[node->name];
+                for (const auto& f : node->fields) {
+                    fields[f.name] = f.type ? resolveTypeExpr(*f.type, noGenerics)
+                                            : Type::unknown();
+                }
+            }
+        }, item);
+    }
 }
 
 auto TypeChecker::registerAdt(const ast::TypeDef& def) -> void {
@@ -125,6 +143,35 @@ auto TypeChecker::typeDefToType(const ast::TypeDef& def) -> TypePtr {
     if (parts.empty()) return Type::unknown();
     if (parts.size() == 1) return parts[0];
     return std::make_shared<Type>(Type{UnionType{std::move(parts)}});
+}
+
+auto TypeChecker::registerTraits(const ast::Program& program) -> void {
+    for (const auto& item : program.items) {
+        std::visit([this](const auto& node) {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, std::unique_ptr<ast::TraitDef>>) {
+                if (!node) return;
+                TraitDef td;
+                td.name = node->name;
+                for (const auto& bodyItem : node->body) {
+                    std::visit([&](const auto& bi) {
+                        using BT = std::decay_t<decltype(bi)>;
+                        if constexpr (std::is_same_v<BT, std::unique_ptr<ast::TypeAnnotation>>) {
+                            if (!bi) return;
+                            auto sig = annotationToSignature(*bi);
+                            if (sig) {
+                                sig->isFoul = bi->isFoul;
+                                td.requiredMethods.push_back(std::move(*sig));
+                            }
+                        }
+                        // FunctionDef items are default implementations — registered
+                        // for completeness but not added to requiredMethods.
+                    }, bodyItem);
+                }
+                m_traits.define(std::move(td));
+            }
+        }, item);
+    }
 }
 
 auto TypeChecker::registerTypeAliases(const ast::Program& program) -> void {
@@ -312,6 +359,9 @@ auto TypeChecker::resolveTypeExpr(const ast::TypeExpr& typeExpr,
         if constexpr (std::is_same_v<T, ast::TypeName>) {
             if (node.parts.empty()) return Type::unknown();
             const std::string& last = node.parts.back();
+            // `This` inside a make block refers to the implementing type.
+            if (last == "This" && node.parts.size() == 1 && m_inMakeBlock && !m_currentMakeType.empty())
+                return Type::named(m_currentMakeType);
             // Single-letter identifiers are generic type variables (docs/
             // types.md Generics) — reuse the same TypeVar for repeated
             // occurrences of the same letter within this clause.
@@ -512,8 +562,11 @@ auto TypeChecker::checkFunctionDef(const ast::FunctionDef& def) -> void {
                   "`" + def.name + "` declared to return " + typeToString(declared->result) +
                   " but body returns " + typeToString(bodyType));
         }
+        // Resolve TypeVars — body inference may have constrained unannotated
+        // params via unifyVar (e.g. `n * 2` → n : Number).
+        for (auto& pt : paramTypes) pt = resolve(pt);
         popScope();
-        signatures.push_back(Signature{def.name, std::move(paramTypes), bodyType});
+        signatures.push_back(Signature{def.name, std::move(paramTypes), resolve(bodyType)});
     }
 
     // make-block methods have an implicit `this` receiver, not a regular
@@ -528,7 +581,17 @@ auto TypeChecker::checkFunctionDef(const ast::FunctionDef& def) -> void {
             // Replace the placeholder declared sig with the fully-checked one.
             if (!signatures.empty()) sigs[0] = signatures[0];
         } else {
-            m_userSignatures[def.name] = std::move(signatures);
+            if (m_checkedFunctions.count(def.name)) {
+                // Additional `let f(...)` with the same name: append to the
+                // overload set rather than replacing (typed overloads).
+                for (auto& sig : signatures)
+                    m_userSignatures[def.name].push_back(std::move(sig));
+            } else {
+                // First real check for this name: replace the provisional
+                // pre-registered signatures with the inferred ones.
+                m_userSignatures[def.name] = std::move(signatures);
+                m_checkedFunctions.insert(def.name);
+            }
         }
     }
 }
@@ -536,7 +599,17 @@ auto TypeChecker::checkFunctionDef(const ast::FunctionDef& def) -> void {
 auto TypeChecker::checkMakeDef(const ast::MakeDef& def) -> void {
     pushScope();
     bool wasInMakeBlock = m_inMakeBlock;
+    auto prevMakeType = m_currentMakeType;
     m_inMakeBlock = true;
+    // Resolve the make-block's target type name for @field / `this` typing.
+    if (def.target) {
+        if (auto* tn = std::get_if<ast::TypeName>(&def.target->kind)) {
+            if (tn->parts.size() == 1) m_currentMakeType = tn->parts[0];
+        } else if (auto* gt = std::get_if<ast::GenericType>(&def.target->kind)) {
+            // e.g. `make Map<K, V> do` or `make Option<A> do`
+            if (gt->name.parts.size() == 1) m_currentMakeType = gt->name.parts[0];
+        }
+    }
     for (const auto& item : def.body) {
         std::visit([this](const auto& node) {
             using T = std::decay_t<decltype(node)>;
@@ -546,7 +619,57 @@ auto TypeChecker::checkMakeDef(const ast::MakeDef& def) -> void {
         }, item);
     }
     m_inMakeBlock = wasInMakeBlock;
+    m_currentMakeType = prevMakeType;
     popScope();
+
+    checkTraitImplementation(def);
+}
+
+auto TypeChecker::checkTraitImplementation(const ast::MakeDef& def) -> void {
+    if (def.implements.empty()) return;
+
+    // Extract the type name from the make target.
+    std::string typeName;
+    if (def.target) {
+        if (auto* tn = std::get_if<ast::TypeName>(&def.target->kind))
+            if (tn->parts.size() == 1) typeName = tn->parts[0];
+        if (auto* gt = std::get_if<ast::GenericType>(&def.target->kind))
+            if (gt->name.parts.size() == 1) typeName = gt->name.parts[0];
+    }
+
+    // Collect method names and their foul status from this make block.
+    std::unordered_map<std::string, bool> provided; // name -> isFoul
+    for (const auto& item : def.body) {
+        std::visit([&](const auto& node) {
+            using T = std::decay_t<decltype(node)>;
+            if constexpr (std::is_same_v<T, std::unique_ptr<ast::FunctionDef>>) {
+                if (node) provided[node->name] = node->isFoul;
+            }
+        }, item);
+    }
+
+    for (const auto& traitName : def.implements) {
+        const TraitDef* trait = m_traits.get(traitName);
+        if (!trait) {
+            error(def.location, "Unknown trait: " + traitName);
+            continue;
+        }
+        std::string prefix = "make " + (typeName.empty() ? "?" : typeName) +
+                             ", implement: " + traitName + " — ";
+        for (const auto& req : trait->requiredMethods) {
+            auto it = provided.find(req.name);
+            if (it == provided.end()) {
+                error(def.location, prefix + "missing required method '" + req.name + "'");
+            } else if (req.isFoul && !it->second) {
+                error(def.location, prefix + "method '" + req.name +
+                      "' must be declared foul (trait requires it)");
+            }
+        }
+        // Register so satisfies() / argMatchesParam can verify trait usage.
+        if (!typeName.empty()) {
+            m_traits.registerImplementation(typeName, traitName);
+        }
+    }
 }
 
 auto TypeChecker::checkMainBlock(const ast::MainBlock& block) -> void {
@@ -569,6 +692,90 @@ auto TypeChecker::inferBody(const std::vector<ast::ExprPtr>& body) -> TypePtr {
         if (expr) lastType = inferExpr(*expr);
     }
     return lastType;
+}
+
+auto TypeChecker::resolveBlockHints(const std::string& name,
+                                     const std::vector<TypePtr>& nonBlockArgTypes) -> std::vector<TypePtr> {
+    const std::vector<Signature>* sigs = m_stdlib.lookup(name);
+    if (!sigs) {
+        auto it = m_userSignatures.find(name);
+        if (it != m_userSignatures.end()) sigs = &it->second;
+    }
+    if (!sigs) return {};
+
+    for (const auto& sig : *sigs) {
+        if (sig.params.size() != nonBlockArgTypes.size() + 1) continue;
+        auto* blockParam = std::get_if<FuncType>(&sig.params.back()->kind);
+        if (!blockParam) continue;
+
+        bool allMatch = true;
+        for (size_t i = 0; i < nonBlockArgTypes.size(); i++) {
+            if (!argMatchesParam(nonBlockArgTypes[i], sig.params[i])) { allMatch = false; break; }
+        }
+        if (!allMatch) continue;
+
+        // Map negative-ID generic placeholders to concrete types from the actual args.
+        std::unordered_map<int, TypePtr> sub;
+        for (size_t i = 0; i < nonBlockArgTypes.size(); i++) {
+            const auto& sigP = sig.params[i];
+            const auto& argT = resolve(nonBlockArgTypes[i]);
+            if (auto* tv = std::get_if<TypeVar>(&sigP->kind); tv && tv->id < 0)
+                sub.emplace(tv->id, argT);
+            else if (auto* lt = std::get_if<ListType>(&sigP->kind))
+                if (auto* tv2 = std::get_if<TypeVar>(&lt->element->kind); tv2 && tv2->id < 0)
+                    if (auto* argLt = std::get_if<ListType>(&argT->kind))
+                        sub.emplace(tv2->id, resolve(argLt->element));
+        }
+
+        auto applySubst = [&](const TypePtr& t) -> TypePtr {
+            if (auto* tv = std::get_if<TypeVar>(&t->kind)) {
+                auto it2 = sub.find(tv->id);
+                if (it2 != sub.end()) return it2->second;
+            }
+            return t;
+        };
+
+        std::vector<TypePtr> hints;
+        for (const auto& p : blockParam->params) hints.push_back(applySubst(p));
+        return hints;
+    }
+    return {};
+}
+
+auto TypeChecker::inferBlock(const ast::Expr& blockExpr,
+                             const std::vector<TypePtr>& hintParams) -> TypePtr {
+    if (auto* lam = std::get_if<ast::Lambda>(&blockExpr.kind)) {
+        if (lam->params.empty()) {
+            // Zero-param lambda `{ }` / `do end` — infer body but stay permissive
+            // so it matches any FuncType param (the block ignores the passed arg).
+            inferExpr(blockExpr);
+            return Type::unknown();
+        }
+        pushScope();
+        std::vector<TypePtr> paramTypes;
+        for (size_t i = 0; i < lam->params.size(); i++) {
+            TypePtr pt;
+            if (i < hintParams.size()) {
+                auto hint = resolve(hintParams[i]);
+                if (!std::holds_alternative<TypeVar>(hint->kind) &&
+                    !std::holds_alternative<UnknownType>(hint->kind)) {
+                    pt = hint;
+                } else {
+                    pt = freshTypeVar();
+                }
+            } else {
+                pt = freshTypeVar();
+            }
+            paramTypes.push_back(pt);
+            if (lam->params[i].name != "_") defineVar(lam->params[i].name, pt);
+        }
+        auto bodyType = inferBody(lam->body);
+        popScope();
+        return Type::func(std::move(paramTypes), resolve(bodyType));
+    }
+    // BlockExpr (no param list) — infer body for side effects, stay permissive.
+    inferExpr(blockExpr);
+    return Type::unknown();
 }
 
 auto TypeChecker::typeOf(const ast::Expr* expr) const -> TypePtr {
@@ -650,16 +857,23 @@ auto TypeChecker::inferExpr(const ast::Expr& expr) -> TypePtr {
         }
         else if constexpr (std::is_same_v<T, ast::UnaryOp>) {
             auto operandType = node.operand ? inferExpr(*node.operand) : Type::unknown();
+            auto resolved = resolve(operandType);
             if (node.op == TokenType::Bang) {
-                if (!std::holds_alternative<UnknownType>(operandType->kind) &&
-                    !typesEqual(operandType, Type::boolean())) {
+                if (auto* tv = std::get_if<TypeVar>(&resolved->kind)) {
+                    unifyVar(tv->id, Type::boolean());
+                } else if (!std::holds_alternative<UnknownType>(resolved->kind) &&
+                           !typesEqual(resolved, Type::boolean())) {
                     error(expr.location, "Logical not '!' requires Bool, got " +
-                          typeToString(operandType));
+                          typeToString(resolved));
                 }
                 return Type::boolean();
             }
             if (node.op == TokenType::Minus) {
-                return operandType;
+                // Unary negation requires a numeric operand.
+                if (auto* tv = std::get_if<TypeVar>(&resolved->kind)) {
+                    unifyVar(tv->id, Type::constrained("N", "Number"));
+                }
+                return resolved;
             }
             return Type::unknown();
         }
@@ -672,13 +886,8 @@ auto TypeChecker::inferExpr(const ast::Expr& expr) -> TypePtr {
                 argTypes.push_back(arg ? inferExpr(*arg) : Type::unknown());
             }
             if (node.block) {
-                inferExpr(**node.block);
-                // A trailing `do...end`/`{ }` block fills the callee's last
-                // param slot (e.g. `times(3) do ... end` is 2 arguments to
-                // `times(n, block)`, not 1) — Block<T> isn't structurally
-                // modeled yet (resolveTypeExpr's BlockType case), so this is
-                // a permissive placeholder, not the block's real type.
-                argTypes.push_back(Type::unknown());
+                auto hints = resolveBlockHints(node.name, argTypes);
+                argTypes.push_back(inferBlock(**node.block, hints));
             }
             return checkCall(node.name, argTypes, expr.location);
         }
@@ -692,8 +901,8 @@ auto TypeChecker::inferExpr(const ast::Expr& expr) -> TypePtr {
                 argTypes.push_back(arg ? inferExpr(*arg) : Type::unknown());
             }
             if (node.block) {
-                inferExpr(**node.block);
-                argTypes.push_back(Type::unknown());
+                auto hints = resolveBlockHints(node.method, argTypes);
+                argTypes.push_back(inferBlock(**node.block, hints));
             }
             return checkCall(node.method, argTypes, expr.location);
         }
@@ -705,10 +914,14 @@ auto TypeChecker::inferExpr(const ast::Expr& expr) -> TypePtr {
                     bool elemPermissive = std::holds_alternative<UnknownType>(elemType->kind) ||
                                          std::holds_alternative<TypeVar>(elemType->kind);
                     bool tPermissive = std::holds_alternative<UnknownType>(t->kind) ||
-                                       std::holds_alternative<TypeVar>(t->kind);
+                                       std::holds_alternative<TypeVar>(t->kind) ||
+                                       std::holds_alternative<FuncType>(t->kind);
+                    bool elemFuncPermissive = elemPermissive ||
+                                              std::holds_alternative<FuncType>(elemType->kind);
                     if (elemPermissive) {
                         elemType = t; // adopt the concrete type if we have one
-                    } else if (!tPermissive && !typesEqual(elemType, t)) {
+                    } else if (!tPermissive && !elemFuncPermissive &&
+                               !argMatchesParam(t, elemType) && !argMatchesParam(elemType, t)) {
                         error(expr.location,
                               "List elements must be the same type. Expected " +
                               typeToString(elemType) + ", got " + typeToString(t));
@@ -752,11 +965,13 @@ auto TypeChecker::inferExpr(const ast::Expr& expr) -> TypePtr {
         else if constexpr (std::is_same_v<T, ast::IfExpr>) {
             if (node.condition) {
                 auto condType = inferExpr(*node.condition);
-                if (!std::holds_alternative<UnknownType>(condType->kind) &&
-                    !std::holds_alternative<TypeVar>(condType->kind) &&
-                    !typesEqual(condType, Type::boolean())) {
+                auto resolved = resolve(condType);
+                if (auto* tv = std::get_if<TypeVar>(&resolved->kind)) {
+                    unifyVar(tv->id, Type::boolean());
+                } else if (!std::holds_alternative<UnknownType>(resolved->kind) &&
+                           !typesEqual(resolved, Type::boolean())) {
                     error(expr.location, "If condition must be Bool, got " +
-                          typeToString(condType));
+                          typeToString(resolved));
                 }
             }
             auto thenType = inferBody(node.thenBody);
@@ -764,8 +979,21 @@ auto TypeChecker::inferExpr(const ast::Expr& expr) -> TypePtr {
                 if (cond) inferExpr(*cond);
                 inferBody(body);
             }
-            if (node.elseBody) inferBody(*node.elseBody);
-            return thenType;
+            if (node.elseBody) {
+                auto elseType = inferBody(*node.elseBody);
+                auto rt = resolve(thenType);
+                auto re = resolve(elseType);
+                bool thenPermissive = std::holds_alternative<TypeVar>(rt->kind) ||
+                                      std::holds_alternative<UnknownType>(rt->kind);
+                bool elsePermissive = std::holds_alternative<TypeVar>(re->kind) ||
+                                      std::holds_alternative<UnknownType>(re->kind);
+                if (!thenPermissive && !elsePermissive &&
+                    !argMatchesParam(re, rt) && !argMatchesParam(rt, re)) {
+                    error(expr.location, "Branch type mismatch: 'if' returns " +
+                          typeToString(rt) + " but 'else' returns " + typeToString(re));
+                }
+            }
+            return resolve(thenType);
         }
         else if constexpr (std::is_same_v<T, ast::MatchExpr>) {
             TypePtr subjectType = node.subject ? inferExpr(*node.subject) : Type::unknown();
@@ -780,9 +1008,19 @@ auto TypeChecker::inferExpr(const ast::Expr& expr) -> TypePtr {
                 }
                 if (clause.guard && *clause.guard) inferExpr(**clause.guard);
                 if (clause.body) {
-                    auto t = inferExpr(*clause.body);
-                    if (std::holds_alternative<UnknownType>(resultType->kind)) {
-                        resultType = t;
+                    auto t = resolve(inferExpr(*clause.body));
+                    auto rt = resolve(resultType);
+                    if (std::holds_alternative<UnknownType>(rt->kind) ||
+                        std::holds_alternative<TypeVar>(rt->kind)) {
+                        resultType = t;  // adopt first concrete arm type
+                    } else {
+                        // Check subsequent arms match the first concrete arm.
+                        bool armPermissive = std::holds_alternative<TypeVar>(t->kind) ||
+                                            std::holds_alternative<UnknownType>(t->kind);
+                        if (!armPermissive && !argMatchesParam(t, rt) && !argMatchesParam(rt, t)) {
+                            error(expr.location, "Match arm type mismatch: expected " +
+                                  typeToString(rt) + " but arm returns " + typeToString(t));
+                        }
                     }
                 }
                 popScope();
@@ -794,15 +1032,25 @@ auto TypeChecker::inferExpr(const ast::Expr& expr) -> TypePtr {
             return node.value ? inferExpr(*node.value) : Type::unit();
         }
         else if constexpr (std::is_same_v<T, ast::Lambda>) {
+            // Lambda used as a value (not a trailing block — that path goes
+            // through inferBlock). Infer param types and body, return a proper
+            // FuncType so call-site checking can validate the argument types.
+            if (node.params.empty()) {
+                auto bodyType = inferBody(node.body);
+                return Type::func({}, resolve(bodyType));
+            }
             pushScope();
+            std::vector<TypePtr> paramTypes;
             for (const auto& param : node.params) {
-                if (param.name != "_") {
-                    defineVar(param.name, freshTypeVar());
-                }
+                auto pt = freshTypeVar();
+                paramTypes.push_back(pt);
+                if (param.name != "_") defineVar(param.name, pt);
             }
             auto bodyType = inferBody(node.body);
             popScope();
-            return bodyType;
+            // Resolve param types after body inference — body may have constrained them.
+            for (auto& pt : paramTypes) pt = resolve(pt);
+            return Type::func(std::move(paramTypes), resolve(bodyType));
         }
         else if constexpr (std::is_same_v<T, ast::SpawnExpr>) {
             pushScope();
@@ -817,10 +1065,13 @@ auto TypeChecker::inferExpr(const ast::Expr& expr) -> TypePtr {
         else if constexpr (std::is_same_v<T, ast::WhileExpr>) {
             if (node.condition) {
                 auto condType = inferExpr(*node.condition);
-                if (!std::holds_alternative<UnknownType>(condType->kind) &&
-                    !typesEqual(condType, Type::boolean())) {
+                auto resolved = resolve(condType);
+                if (auto* tv = std::get_if<TypeVar>(&resolved->kind)) {
+                    unifyVar(tv->id, Type::boolean());
+                } else if (!std::holds_alternative<UnknownType>(resolved->kind) &&
+                           !typesEqual(resolved, Type::boolean())) {
                     error(expr.location, "While condition must be Bool, got " +
-                          typeToString(condType));
+                          typeToString(resolved));
                 }
             }
             inferBody(node.body);
@@ -855,16 +1106,36 @@ auto TypeChecker::inferExpr(const ast::Expr& expr) -> TypePtr {
         else if constexpr (std::is_same_v<T, ast::ThenElseExpr>) {
             if (node.condition) {
                 auto condType = inferExpr(*node.condition);
-                if (!std::holds_alternative<UnknownType>(condType->kind) &&
-                    !std::holds_alternative<TypeVar>(condType->kind) &&
-                    !typesEqual(condType, Type::boolean())) {
+                auto resolved = resolve(condType);
+                if (auto* tv = std::get_if<TypeVar>(&resolved->kind)) {
+                    unifyVar(tv->id, Type::boolean());
+                } else if (!std::holds_alternative<UnknownType>(resolved->kind) &&
+                           !typesEqual(resolved, Type::boolean())) {
                     error(expr.location, "then/else condition must be Bool, got " +
-                          typeToString(condType));
+                          typeToString(resolved));
                 }
             }
             auto thenType = node.thenExpr ? inferExpr(*node.thenExpr) : Type::unknown();
-            if (node.elseExpr) inferExpr(*node.elseExpr);
-            return thenType;
+            if (node.elseExpr) {
+                auto elseType = inferExpr(*node.elseExpr);
+                auto rt = resolve(thenType);
+                auto re = resolve(elseType);
+                bool thenPermissive = std::holds_alternative<TypeVar>(rt->kind) ||
+                                      std::holds_alternative<UnknownType>(rt->kind);
+                bool elsePermissive = std::holds_alternative<TypeVar>(re->kind) ||
+                                      std::holds_alternative<UnknownType>(re->kind);
+                if (!thenPermissive && !elsePermissive &&
+                    !argMatchesParam(re, rt) && !argMatchesParam(rt, re)) {
+                    error(expr.location, "Branch type mismatch: 'then' returns " +
+                          typeToString(rt) + " but 'else' returns " + typeToString(re));
+                }
+            }
+            return resolve(thenType);
+        }
+        else if constexpr (std::is_same_v<T, ast::ThisExpr>) {
+            // Inside a make block, `this` / `@field` has the record type.
+            if (!m_currentMakeType.empty()) return Type::named(m_currentMakeType);
+            return Type::unknown();
         }
         else {
             return Type::unknown();
@@ -876,22 +1147,7 @@ auto TypeChecker::inferExpr(const ast::Expr& expr) -> TypePtr {
 
 auto TypeChecker::inferBinaryOp(TokenType op, const TypePtr& left, const TypePtr& right,
                                 SourceLocation loc) -> TypePtr {
-    if (std::holds_alternative<UnknownType>(left->kind) ||
-        std::holds_alternative<UnknownType>(right->kind) ||
-        std::holds_alternative<TypeVar>(left->kind) ||
-        std::holds_alternative<TypeVar>(right->kind)) {
-        // Can't check if types are unknown
-        switch (op) {
-            case TokenType::EqEq: case TokenType::NotEq:
-            case TokenType::LessThan: case TokenType::GreaterThan:
-            case TokenType::LessEq: case TokenType::GreaterEq:
-            case TokenType::AmpAmp: case TokenType::PipePipe:
-                return Type::boolean();
-            default:
-                return left;
-        }
-    }
-
+    // Type predicates used both in the TypeVar bail-out and the concrete section.
     auto isString = [](const TypePtr& t) {
         auto* list = std::get_if<ListType>(&t->kind);
         if (!list) return false;
@@ -902,6 +1158,87 @@ auto TypeChecker::inferBinaryOp(TokenType op, const TypePtr& left, const TypePtr
         auto* prim = std::get_if<PrimitiveType>(&t->kind);
         return prim && prim->kind == PrimitiveType::Char;
     };
+    auto isNumeric = [](const TypePtr& t) -> bool {
+        if (auto* prim = std::get_if<PrimitiveType>(&t->kind))
+            return prim->kind == PrimitiveType::Integer;
+        return std::holds_alternative<SizedIntType>(t->kind) ||
+               std::holds_alternative<SizedFloatType>(t->kind);
+    };
+
+    // Resolve TypeVars through the substitution map — a prior operation in the
+    // same body may have already constrained them (e.g. `n - 1` constrains n
+    // to Number before `n == 0` is checked).
+    auto lhs = resolve(left);
+    auto rhs = resolve(right);
+
+    {
+        auto lhsIsVar = std::holds_alternative<TypeVar>(lhs->kind);
+        auto rhsIsVar = std::holds_alternative<TypeVar>(rhs->kind);
+        auto lhsIsUnk = std::holds_alternative<UnknownType>(lhs->kind);
+        auto rhsIsUnk = std::holds_alternative<UnknownType>(rhs->kind);
+
+        if (lhsIsVar || rhsIsVar || lhsIsUnk || rhsIsUnk) {
+            auto varId = [](const TypePtr& t) -> int {
+                if (auto* tv = std::get_if<TypeVar>(&t->kind)) return tv->id;
+                return -1;
+            };
+            auto isConcrete = [](const TypePtr& t) {
+                return !std::holds_alternative<TypeVar>(t->kind) &&
+                       !std::holds_alternative<UnknownType>(t->kind);
+            };
+
+            switch (op) {
+                // -, *, /, %: both operands must be Number.
+                case TokenType::Minus: case TokenType::Star:
+                case TokenType::Slash: case TokenType::Percent: {
+                    auto nc = Type::constrained("N", "Number");
+                    if (int id = varId(lhs); id >= 0) unifyVar(id, nc);
+                    if (int id = varId(rhs); id >= 0) unifyVar(id, nc);
+                    if (isConcrete(lhs)) return lhs;
+                    if (isConcrete(rhs)) return rhs;
+                    return resolve(lhs);
+                }
+                // +: String/Char on one side → constrain TypeVar to String;
+                //    numeric on one side → constrain TypeVar to Number.
+                case TokenType::Plus: {
+                    if (isConcrete(lhs) && (isString(lhs) || isChar(lhs))) {
+                        if (int id = varId(rhs); id >= 0) unifyVar(id, Type::string());
+                        return Type::string();
+                    }
+                    if (isConcrete(rhs) && (isString(rhs) || isChar(rhs))) {
+                        if (int id = varId(lhs); id >= 0) unifyVar(id, Type::string());
+                        return Type::string();
+                    }
+                    if (isConcrete(lhs) && isNumeric(lhs)) {
+                        if (int id = varId(rhs); id >= 0) unifyVar(id, Type::constrained("N", "Number"));
+                        return lhs;
+                    }
+                    if (isConcrete(rhs) && isNumeric(rhs)) {
+                        if (int id = varId(lhs); id >= 0) unifyVar(id, Type::constrained("N", "Number"));
+                        return rhs;
+                    }
+                    return lhs;
+                }
+                // Ordered comparisons: constrain TypeVar to the concrete side.
+                case TokenType::LessThan: case TokenType::GreaterThan:
+                case TokenType::LessEq: case TokenType::GreaterEq: {
+                    if (int id = varId(lhs); id >= 0 && isConcrete(rhs)) unifyVar(id, rhs);
+                    if (int id = varId(rhs); id >= 0 && isConcrete(lhs)) unifyVar(id, lhs);
+                    return Type::boolean();
+                }
+                case TokenType::EqEq: case TokenType::NotEq:
+                    return Type::boolean();
+                case TokenType::AmpAmp: case TokenType::PipePipe: {
+                    if (int id = varId(lhs); id >= 0) unifyVar(id, Type::boolean());
+                    if (int id = varId(rhs); id >= 0) unifyVar(id, Type::boolean());
+                    return Type::boolean();
+                }
+                default:
+                    return lhs;
+            }
+        }
+    }
+
     auto isFloat = [](const TypePtr& t) { return std::holds_alternative<SizedFloatType>(t->kind); };
     auto isIntegerLike = [](const TypePtr& t) {
         if (auto* prim = std::get_if<PrimitiveType>(&t->kind)) return prim->kind == PrimitiveType::Integer;
@@ -912,9 +1249,9 @@ auto TypeChecker::inferBinaryOp(TokenType op, const TypePtr& left, const TypePtr
         return prim && prim->kind == PrimitiveType::Bool;
     };
 
-    bool leftIsString = isString(left), rightIsString = isString(right);
-    bool leftIsFloat = isFloat(left), rightIsFloat = isFloat(right);
-    bool leftIsInt = isIntegerLike(left), rightIsInt = isIntegerLike(right);
+    bool leftIsString = isString(lhs), rightIsString = isString(rhs);
+    bool leftIsFloat = isFloat(lhs), rightIsFloat = isFloat(rhs);
+    bool leftIsInt = isIntegerLike(lhs), rightIsInt = isIntegerLike(rhs);
 
     switch (op) {
         case TokenType::Plus:
@@ -926,17 +1263,17 @@ auto TypeChecker::inferBinaryOp(TokenType op, const TypePtr& left, const TypePtr
                 return Type::string();
             // String + Char, Char + String, Char + Char — all produce String
             // (String = [Char], so appending a Char or two Chars is valid concatenation).
-            if ((leftIsString || isChar(left)) && (rightIsString || isChar(right)))
+            if ((leftIsString || isChar(lhs)) && (rightIsString || isChar(rhs)))
                 return Type::string();
             if (leftIsString || rightIsString) {
-                error(loc, "Cannot add " + typeToString(left) + " and " + typeToString(right));
+                error(loc, "Cannot add " + typeToString(lhs) + " and " + typeToString(rhs));
                 return Type::string();
             }
-            if (!typesEqual(left, right)) {
+            if (!typesEqual(lhs, rhs)) {
                 error(loc, "Operator '+' requires matching types, got " +
-                      typeToString(left) + " and " + typeToString(right));
+                      typeToString(lhs) + " and " + typeToString(rhs));
             }
-            return left;
+            return lhs;
 
         case TokenType::Minus:
         case TokenType::Star:
@@ -950,7 +1287,7 @@ auto TypeChecker::inferBinaryOp(TokenType op, const TypePtr& left, const TypePtr
                 error(loc, "Cannot use arithmetic operator on String");
                 return Type::integer();
             }
-            return left;
+            return lhs;
 
         case TokenType::EqEq:
         case TokenType::NotEq:
@@ -960,18 +1297,18 @@ auto TypeChecker::inferBinaryOp(TokenType op, const TypePtr& left, const TypePtr
         case TokenType::GreaterThan:
         case TokenType::LessEq:
         case TokenType::GreaterEq:
-            if (isBool(left)) {
+            if (isBool(lhs)) {
                 error(loc, "Cannot compare Bool values with '<', '>', '<=', '>='");
             }
             return Type::boolean();
 
         case TokenType::AmpAmp:
         case TokenType::PipePipe:
-            if (!isBool(left)) {
-                error(loc, "Logical operator requires Bool, got " + typeToString(left));
+            if (!isBool(lhs)) {
+                error(loc, "Logical operator requires Bool, got " + typeToString(lhs));
             }
-            if (!isBool(right)) {
-                error(loc, "Logical operator requires Bool, got " + typeToString(right));
+            if (!isBool(rhs)) {
+                error(loc, "Logical operator requires Bool, got " + typeToString(rhs));
             }
             return Type::boolean();
 
@@ -1034,6 +1371,9 @@ auto TypeChecker::argMatchesParam(const TypePtr& argType, const TypePtr& paramTy
             for (size_t i = 0; i < paramFn->params.size(); i++) {
                 if (!argMatchesParam(argFn->params[i], paramFn->params[i])) return false;
             }
+            // Unit as the expected return means "result discarded" — accept any body type.
+            if (auto* prim = std::get_if<PrimitiveType>(&paramFn->result->kind);
+                prim && prim->kind == PrimitiveType::Unit) return true;
             return argMatchesParam(argFn->result, paramFn->result);
         }
         // Curried arg: `(A) -> (B) -> C` matches `(A, B) -> C`.
@@ -1099,7 +1439,52 @@ auto TypeChecker::checkCall(const std::string& name, const std::vector<TypePtr>&
         auto it = m_userSignatures.find(name);
         if (it != m_userSignatures.end()) sigs = &it->second;
     }
-    if (!sigs) return Type::unknown();  // unknown name, or not yet registered (forward/recursive ref)
+    if (!sigs) {
+        // Record field access: `user.name` desugars to checkCall("name", [User]).
+        // Look up the field type in the record registry before giving up.
+        // Resolve TypeVars first — the receiver may have been constrained by
+        // a previous inference step.
+        if (!argTypes.empty()) {
+            auto receiver = resolve(argTypes[0]);
+            if (auto* named = std::get_if<NamedType>(&receiver->kind)) {
+                auto ri = m_recordFields.find(named->name);
+                if (ri != m_recordFields.end()) {
+                    auto fi = ri->second.find(name);
+                    if (fi != ri->second.end()) return fi->second;
+                }
+            }
+            // Trait-bounded receiver: `item.method()` where `item: SomeTrait`.
+            // Look up the method in the trait's required methods to get return type.
+            if (auto* ct = std::get_if<ConstrainedType>(&receiver->kind)) {
+                if (const TraitDef* trait = m_traits.get(ct->traitName)) {
+                    for (const auto& req : trait->requiredMethods) {
+                        if (req.name == name) return req.result;
+                    }
+                }
+            }
+            // If the field name is unambiguously defined on exactly one record
+            // type, constrain a TypeVar receiver to that record type.
+            if (std::holds_alternative<TypeVar>(receiver->kind)) {
+                std::string matchedRecord;
+                TypePtr matchedFieldType;
+                for (const auto& [recName, fields] : m_recordFields) {
+                    auto fi = fields.find(name);
+                    if (fi != fields.end()) {
+                        if (!matchedRecord.empty()) { matchedRecord.clear(); break; }
+                        matchedRecord = recName;
+                        matchedFieldType = fi->second;
+                    }
+                }
+                if (!matchedRecord.empty()) {
+                    if (auto* tv = std::get_if<TypeVar>(&receiver->kind)) {
+                        unifyVar(tv->id, Type::named(matchedRecord));
+                    }
+                    return matchedFieldType;
+                }
+            }
+        }
+        return Type::unknown();  // unknown name, or not yet registered (forward/recursive ref)
+    }
 
     // `let hello = makeGreeter("Hello")` is a top-level zero-arg binding
     // (every top-level `let NAME = EXPR` is a 0-param function — see
@@ -1159,13 +1544,20 @@ auto TypeChecker::checkCall(const std::string& name, const std::vector<TypePtr>&
     // the case where nothing in the known overload set could ever apply.
     if (!argTypes.empty() && std::holds_alternative<NamedType>(argTypes[0]->kind)) {
         bool anyFirstParamPlausible = false;
+        bool anyConstrainedFirstParam = false;
         for (const auto& sig : *sigs) {
-            if (!sig.params.empty() && argMatchesParam(argTypes[0], sig.params[0])) {
-                anyFirstParamPlausible = true;
-                break;
+            if (!sig.params.empty()) {
+                if (std::holds_alternative<ConstrainedType>(sig.params[0]->kind))
+                    anyConstrainedFirstParam = true;
+                if (argMatchesParam(argTypes[0], sig.params[0])) {
+                    anyFirstParamPlausible = true;
+                    break;
+                }
             }
         }
-        if (!anyFirstParamPlausible) return Type::unknown();
+        // Don't silence mismatches when a trait-bounded param exists — the
+        // function IS designed for NamedTypes and a constraint violation must error.
+        if (!anyFirstParamPlausible && !anyConstrainedFirstParam) return Type::unknown();
     }
 
     std::vector<const Signature*> arityMatches;
@@ -1184,8 +1576,32 @@ auto TypeChecker::checkCall(const std::string& name, const std::vector<TypePtr>&
         if (allMatch) fullMatches.push_back(&sig);
     }
 
-    if (fullMatches.size() == 1) return fullMatches[0]->result;
-    if (fullMatches.size() > 1) return fullMatches[0]->result;  // no overlapping cases exist today
+    if (fullMatches.size() >= 1) {
+        const auto& matched = *fullMatches[0];
+        // Propagate the param types back to any TypeVar arguments so that
+        // unannotated params are constrained by the functions they're passed
+        // into (e.g. `let f(s) = s.split(",")` constrains `s` to String).
+        // Only apply when the param is concrete — skip generic params that
+        // themselves contain TypeVars (e.g. `first : [A] -> A?`).
+        auto typeContainsVar = [](const TypePtr& t) {
+            // Shallow check: top-level TypeVar, or List/Optional/Constrained
+            // wrapping a TypeVar. Deep recursion isn't worth the complexity here.
+            if (std::holds_alternative<TypeVar>(t->kind)) return true;
+            if (auto* lt = std::get_if<ListType>(&t->kind))
+                return std::holds_alternative<TypeVar>(lt->element->kind);
+            if (auto* ot = std::get_if<OptionalType>(&t->kind))
+                return std::holds_alternative<TypeVar>(ot->inner->kind);
+            return false;
+        };
+        for (size_t i = 0; i < argTypes.size() && i < matched.params.size(); i++) {
+            auto resolved = resolve(argTypes[i]);
+            if (auto* tv = std::get_if<TypeVar>(&resolved->kind)) {
+                const auto& param = matched.params[i];
+                if (!typeContainsVar(param)) unifyVar(tv->id, param);
+            }
+        }
+        return matched.result;
+    }
 
     if (arityMatches.empty()) {
         error(loc, "`" + name + "` expects " + std::to_string((*sigs)[0].params.size()) +
@@ -1256,6 +1672,21 @@ auto TypeChecker::typeMismatch(SourceLocation loc, const TypePtr& expected,
 
 auto TypeChecker::freshTypeVar() -> TypePtr {
     return Type::typeVar(m_nextTypeVar++);
+}
+
+auto TypeChecker::resolve(TypePtr t) const -> TypePtr {
+    while (t) {
+        auto* tv = std::get_if<TypeVar>(&t->kind);
+        if (!tv) break;
+        auto it = m_subst.find(tv->id);
+        if (it == m_subst.end()) break;
+        t = it->second;
+    }
+    return t;
+}
+
+auto TypeChecker::unifyVar(int id, TypePtr concrete) -> void {
+    if (!m_subst.count(id)) m_subst[id] = std::move(concrete);
 }
 
 } // namespace kex::semantic

@@ -60,6 +60,10 @@ private:
     TypeChecker m_checker;
     bool m_inFoulContext = false;
 
+    // Stdlib module names whose methods are inherently foul (I/O, network, etc.).
+    // IO.inspect is the one documented exception — always allowed even in pure fns.
+    static constexpr std::string_view kFoulModules[] = {"IO", "Net", "File", "Http", "Database", "Supervisor"};
+
     // break/next bind to the nearest enclosing Loop marker, but a Closure
     // marker in between makes them illegal — they don't cross into a
     // do-block passed to another function. `match`/`receive` clauses don't

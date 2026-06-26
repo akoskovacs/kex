@@ -1,0 +1,6 @@
+# Plus with a String literal constrains the other operand to String.
+# Passing Integer is caught at compile time without any annotation.
+let greet(name) = "Hello, " + name
+main do
+  IO.printLine(greet(42))
+end

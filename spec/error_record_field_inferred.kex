@@ -1,0 +1,13 @@
+# Accessing a record field on a TypeVar param constrains it to that record type.
+# distance(p) uses p.x and p.y (Integer fields on Point), so the signature
+# becomes Point -> Integer and distance("oops") is caught.
+record Point do
+  x : Integer
+  y : Integer
+end
+let distance(p) do
+  p.x * p.x + p.y * p.y
+end
+main do
+  IO.printLine(distance("oops"))
+end

@@ -1,26 +1,26 @@
 # Optional parens before `do` blocks — when a call is immediately followed
 # by `do`, parens around its arguments become optional.
-let foo(a, b, c, block) do
+foul foo(a, b, c, block) do
   IO.printLine("foo: a=${a} b=${b} c=${c}")
   block()
 end
 
-let withKeyword(target, restart, block) do
+foul withKeyword(target, restart, block) do
   IO.printLine("withKeyword: target=${target} restart=${restart}")
   block()
 end
 
-let withItems(items, block) do
+foul withItems(items, block) do
   IO.printLine("withItems: ${items}")
   block()
 end
 
-let withHandler(name, handler, block) do
+foul withHandler(name, handler, block) do
   IO.printLine("withHandler: ${name} -> ${handler(3)}")
   block()
 end
 
-let worker(target, restart, block) do
+foul worker(target, restart, block) do
   IO.printLine("worker: target=${target} restart=${restart}")
   block()
 end

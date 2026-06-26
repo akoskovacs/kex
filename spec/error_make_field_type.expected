@@ -1,0 +1,2 @@
+spec/error_make_field_type.kex:9:14: error: Cannot add Integer and String
+Aborted: fix type errors before running (use --no-check to skip).

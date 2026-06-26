@@ -1087,7 +1087,7 @@ int main() {
             // accept an Atom argument without a type error.
             assertTrue(noErrors(
                 "type Level = :debug | :info | :warn | :error\n"
-                "let log(level: Level, msg: String) do\n"
+                "foul log(level: Level, msg: String) do\n"
                 "  IO.printLine(msg)\n"
                 "end\n"
                 "main do\n"
@@ -1099,7 +1099,7 @@ int main() {
         it("still rejects a clearly wrong type for an aliased param", []() {
             assertTrue(hasError(
                 "type Level = :debug | :info\n"
-                "let log(level: Level, msg: String) do\n"
+                "foul log(level: Level, msg: String) do\n"
                 "  IO.printLine(msg)\n"
                 "end\n"
                 "main do\n"
@@ -1139,6 +1139,207 @@ int main() {
                 "main do\n"
                 "  let r = add(1, 2)\n"
                 "  IO.printLine(r)\n"
+                "end\n"
+            ));
+        });
+    });
+
+    describe("Semantic — purity (foul)", []() {
+        it("pure function calling IO is an error", []() {
+            assertTrue(hasError(
+                "let impure(msg: String) do\n"
+                "  IO.printLine(msg)\n"
+                "end\n"
+                "main do impure(\"hi\") end\n"
+            ));
+        });
+
+        it("foul function calling IO is fine", []() {
+            assertTrue(noErrors(
+                "foul doIO(msg: String) do\n"
+                "  IO.printLine(msg)\n"
+                "end\n"
+                "main do doIO(\"hi\") end\n"
+            ));
+        });
+
+        it("IO in closure inside pure function is an error", []() {
+            assertTrue(hasError(
+                "let process(nums) do\n"
+                "  nums.map { |n|\n"
+                "    IO.printLine(n)\n"
+                "    n * 2\n"
+                "  }\n"
+                "end\n"
+                "main do process([1,2,3]) end\n"
+            ));
+        });
+
+        it("IO.inspect is always allowed even in pure context", []() {
+            assertTrue(noErrors(
+                "let debug(n) do\n"
+                "  IO.inspect(n)\n"
+                "  n * 2\n"
+                "end\n"
+                "main do IO.printLine(debug(5)) end\n"
+            ));
+        });
+
+        it("pure calling another pure is fine", []() {
+            assertTrue(noErrors(
+                "let double(n) = n * 2\n"
+                "let quadruple(n) = double(double(n))\n"
+                "main do IO.printLine(quadruple(3)) end\n"
+            ));
+        });
+
+        it("pure calling user-defined foul is an error", []() {
+            assertTrue(hasError(
+                "foul doSomething do\n"
+                "  42\n"
+                "end\n"
+                "let pure(n) do\n"
+                "  doSomething()\n"
+                "  n\n"
+                "end\n"
+                "main do pure(1) end\n"
+            ));
+        });
+    });
+
+    describe("Semantic — traits", []() {
+        it("valid trait implementation passes", []() {
+            assertTrue(noErrors(
+                "trait Printable do\n"
+                "  toString : () -> String\n"
+                "end\n"
+                "make Point, implement: Printable do\n"
+                "  let toString = \"a point\"\n"
+                "end\n"
+                "main do IO.printLine(\"ok\") end\n"
+            ));
+        });
+
+        it("missing required method is an error", []() {
+            assertTrue(hasError(
+                "trait Printable do\n"
+                "  toString : () -> String\n"
+                "end\n"
+                "make Point, implement: Printable do\n"
+                "  let other = 42\n"
+                "end\n"
+                "main do IO.printLine(\"ok\") end\n"
+            ));
+        });
+
+        it("unknown trait is an error", []() {
+            assertTrue(hasError(
+                "make Point, implement: NonExistentTrait do\n"
+                "  let foo = 1\n"
+                "end\n"
+                "main do IO.printLine(\"ok\") end\n"
+            ));
+        });
+
+        it("implementing multiple traits all satisfied passes", []() {
+            assertTrue(noErrors(
+                "trait Scorable do\n"
+                "  score : () -> Integer\n"
+                "end\n"
+                "trait Labelable do\n"
+                "  label : () -> String\n"
+                "end\n"
+                "make Thing, implement: Scorable, Labelable do\n"
+                "  let score = 1\n"
+                "  let label = \"hi\"\n"
+                "end\n"
+                "main do IO.printLine(\"ok\") end\n"
+            ));
+        });
+
+        it("foul trait method implemented as let is an error", []() {
+            assertTrue(hasError(
+                "trait Storable do\n"
+                "  foul save : () -> String\n"
+                "end\n"
+                "make Doc, implement: Storable do\n"
+                "  let save = \"saved\"\n"
+                "end\n"
+                "main do IO.printLine(\"ok\") end\n"
+            ));
+        });
+
+        it("foul trait method implemented as foul passes", []() {
+            assertTrue(noErrors(
+                "trait Storable do\n"
+                "  foul save : () -> String\n"
+                "end\n"
+                "make Doc, implement: Storable do\n"
+                "  foul save = \"saved\"\n"
+                "end\n"
+                "main do IO.printLine(\"ok\") end\n"
+            ));
+        });
+
+        it("missing one of two required traits is an error", []() {
+            assertTrue(hasError(
+                "trait Scorable do\n"
+                "  score : () -> Integer\n"
+                "end\n"
+                "trait Labelable do\n"
+                "  label : () -> String\n"
+                "end\n"
+                "make Thing, implement: Scorable, Labelable do\n"
+                "  let score = 1\n"
+                "end\n"
+                "main do IO.printLine(\"ok\") end\n"
+            ));
+        });
+
+        it("This in param annotation resolves to implementing type", []() {
+            assertTrue(noErrors(
+                "trait Comparable do\n"
+                "  compare : This -> String\n"
+                "end\n"
+                "record Point do x : Integer end\n"
+                "make Point, implement: Comparable do\n"
+                "  let compare(other: This) = \"done\"\n"
+                "end\n"
+                "main do\n"
+                "  let p = Point { x: 1 }\n"
+                "  IO.printLine(p.compare(Point { x: 2 }))\n"
+                "end\n"
+            ));
+        });
+
+        it("trait-bounded param rejects non-implementing type", []() {
+            assertTrue(hasError(
+                "trait Describable do\n"
+                "  describe : () -> String\n"
+                "end\n"
+                "record Animal do name : String end\n"
+                "record Dog do name : String end\n"
+                "make Dog, implement: Describable do\n"
+                "  let describe = \"dog\"\n"
+                "end\n"
+                "let showDescription(item: Describable) = item.describe()\n"
+                "main do IO.printLine(showDescription(Animal { name: \"Cat\" })) end\n"
+            , "expects argument 1 to be Describable"));
+        });
+
+        it("trait method return type inferred from trait definition", []() {
+            assertTrue(noErrors(
+                "trait Nameable do\n"
+                "  getName : () -> String\n"
+                "end\n"
+                "record Cat do name : String end\n"
+                "make Cat, implement: Nameable do\n"
+                "  let getName = @name\n"
+                "end\n"
+                "let extractName(item: Nameable) = item.getName()\n"
+                "main do\n"
+                "  let c = Cat { name: \"Whiskers\" }\n"
+                "  IO.printLine(extractName(c))\n"
                 "end\n"
             ));
         });

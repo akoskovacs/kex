@@ -1,0 +1,5 @@
+# && constrains both operands to Bool; passing Integer is caught.
+let both(a, b) = a && b
+main do
+  IO.printLine(both(42, false))
+end

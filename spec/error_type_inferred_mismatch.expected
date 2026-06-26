@@ -1,0 +1,4 @@
+spec/error_type_inferred_mismatch.kex:5:16: error: `double` expects argument 1 to be Number, but got String
+
+double : Number -> Integer
+Aborted: fix type errors before running (use --no-check to skip).

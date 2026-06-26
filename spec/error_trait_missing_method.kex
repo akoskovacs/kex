@@ -1,0 +1,12 @@
+# Implementing a trait without providing a required method is a compile error.
+trait Printable do
+  toString : () -> String
+end
+
+make Point, implement: Printable do
+  let someOtherMethod = 42
+end
+
+main do
+  IO.printLine("should not reach")
+end

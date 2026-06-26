@@ -1,0 +1,13 @@
+# A trait can declare foul required methods.
+# Implementing with `let` when `foul` is required is a compile error.
+trait Storable do
+  foul save : () -> String
+end
+
+make Record, implement: Storable do
+  let save = "saved"
+end
+
+main do
+  IO.printLine("should not reach")
+end

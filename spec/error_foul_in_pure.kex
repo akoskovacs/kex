@@ -1,0 +1,8 @@
+# Pure function calling IO is a purity violation.
+let impure(msg: String) do
+  IO.printLine(msg)
+end
+
+main do
+  impure("hello")
+end

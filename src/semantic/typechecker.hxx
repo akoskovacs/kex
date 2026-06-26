@@ -62,8 +62,10 @@ private:
     // scope as a fresh type var — mirrors how checkFunctionDef already
     // treats untyped params, just recursing into pattern structure.
     auto bindPatternVars(const ast::Pattern& pat) -> void;
+    auto registerTraits(const ast::Program& program) -> void;
     auto checkFunctionDef(const ast::FunctionDef& def) -> void;
     auto checkMakeDef(const ast::MakeDef& def) -> void;
+    auto checkTraitImplementation(const ast::MakeDef& def) -> void;
     auto checkMainBlock(const ast::MainBlock& block) -> void;
 
     // Resolves a parsed `ast::TypeExpr` (param/signature annotation syntax)
@@ -77,6 +79,19 @@ private:
     // Type inference for expressions
     auto inferExpr(const ast::Expr& expr) -> TypePtr;
     auto inferBody(const std::vector<ast::ExprPtr>& body) -> TypePtr;
+
+    // Infer a trailing block (Lambda or BlockExpr) with optional hint param
+    // types so the call site constrains the lambda's params before the body
+    // is checked. Returns a FuncType wrapping inferred param and body types.
+    auto inferBlock(const ast::Expr& blockExpr,
+                    const std::vector<TypePtr>& hintParams) -> TypePtr;
+
+    // Look up matching signatures for `name` with `nonBlockArgTypes` as the
+    // non-block args, find the first that has a FuncType as its last param,
+    // and resolve any negative-ID generic placeholders against the actual arg
+    // types. Returns the resolved block param types, or empty if not found.
+    auto resolveBlockHints(const std::string& name,
+                           const std::vector<TypePtr>& nonBlockArgTypes) -> std::vector<TypePtr>;
 
     // Binary operator type resolution
     auto inferBinaryOp(TokenType op, const TypePtr& left, const TypePtr& right,
@@ -115,6 +130,13 @@ private:
     std::unordered_map<std::string, std::vector<std::string>> m_adtVariants;
     std::unordered_map<std::string, std::string> m_adtOfConstructor;
 
+    // Record field types: typeName -> { fieldName -> TypePtr }.
+    // Populated by a pre-pass over all RecordDefs so field access in method
+    // chains (`user.name`, `point.x`) returns the declared field type.
+    std::unordered_map<std::string,
+                       std::unordered_map<std::string, TypePtr>> m_recordFields;
+    auto registerRecordFields(const ast::Program& program) -> void;
+
     // Type alias map — populated before function bodies are checked.
     std::unordered_map<std::string, TypePtr> m_typeAliases;
 
@@ -135,10 +157,30 @@ private:
     // today, just not yet improved; that's call-graph SCC ordering,
     // phase 5b, not attempted here).
     std::unordered_map<std::string, std::vector<Signature>> m_userSignatures;
+    // Names whose provisional pre-registration has been replaced by the first
+    // real checkFunctionDef call. Subsequent calls for the same name append
+    // rather than replace, building the overload set incrementally.
+    std::set<std::string> m_checkedFunctions;
     bool m_inMakeBlock = false;
+    // The record type name being defined by the current `make X do` block,
+    // so `this` and `@field` expressions resolve to `NamedType("X")`.
+    std::string m_currentMakeType;
 
     // Populated by inferExpr; maps each visited Expr node to its inferred type.
     std::unordered_map<const ast::Expr*, TypePtr> m_typeMap;
+
+    // Unification substitution: TypeVar id → the concrete/constrained type it
+    // was unified with during body inference. Never cleared between functions
+    // because TypeVar IDs are globally unique (monotonically incrementing).
+    std::unordered_map<int, TypePtr> m_subst;
+
+    // Walk m_subst to find the concrete type behind a TypeVar, following any
+    // chain of substitutions. Returns `t` unchanged for non-TypeVar types.
+    auto resolve(TypePtr t) const -> TypePtr;
+
+    // Record that TypeVar `id` equals `concrete`.
+    // No-op if `id` already has a binding (first writer wins).
+    auto unifyVar(int id, TypePtr concrete) -> void;
 
     auto freshTypeVar() -> TypePtr;
 };

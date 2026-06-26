@@ -294,6 +294,28 @@ auto Analyzer::analyzeExpr(const ast::Expr& expr) -> void {
             }
             if (node.block) analyzeExpr(**node.block);
 
+            // IO.inspect is the documented purity-exempt escape hatch.
+            bool isInspect = (node.method == "inspect");
+            if (!m_inFoulContext && !isInspect && node.receiver) {
+                auto receiverName = [&]() -> std::string {
+                    if (auto* lo = std::get_if<ast::Identifier>(&node.receiver->kind))
+                        return lo->name;
+                    if (auto* up = std::get_if<ast::UpperIdentifier>(&node.receiver->kind))
+                        return up->name;
+                    return {};
+                }();
+                if (!receiverName.empty()) {
+                    for (std::string_view mod : kFoulModules) {
+                        if (receiverName == mod) {
+                            error(expr.location,
+                                "Cannot call foul function '" + receiverName + "." +
+                                node.method + "' from pure context");
+                            break;
+                        }
+                    }
+                }
+            }
+
             // Check mutating call on immutable
             if (node.mutating) {
                 if (auto* ident = std::get_if<ast::Identifier>(&node.receiver->kind)) {

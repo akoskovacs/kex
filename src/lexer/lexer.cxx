@@ -32,6 +32,7 @@ static const std::unordered_map<std::string, TokenType> keywords = {
     {"then", TokenType::Then},
     {"this", TokenType::This},
     {"timeout", TokenType::Timeout},
+    {"trait", TokenType::Trait},
     {"true", TokenType::True},
     {"type", TokenType::Type},
     {"using", TokenType::Using},

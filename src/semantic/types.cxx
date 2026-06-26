@@ -199,6 +199,11 @@ auto typeToString(const TypePtr& type) -> std::string {
             return result;
         }
         else if constexpr (std::is_same_v<T, TypeVar>) {
+            if (t.id < 0) {
+                // Table-level generic placeholder: -1 -> 'A', -2 -> 'B', ...
+                int idx = (-t.id - 1) % 26;
+                return std::string(1, static_cast<char>('A' + idx));
+            }
             return "T" + std::to_string(t.id);
         }
         else if constexpr (std::is_same_v<T, ConstrainedType>) {

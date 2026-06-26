@@ -1,0 +1,16 @@
+trait Describable do
+  describe : () -> String
+end
+
+record Animal do name : String end
+record Dog do name : String end
+
+make Dog, implement: Describable do
+  let describe = "I am a dog"
+end
+
+let showDescription(item: Describable) = item.describe()
+
+main do
+  IO.printLine(showDescription(Animal { name: "Cat" }))
+end

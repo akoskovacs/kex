@@ -363,6 +363,7 @@ struct TypeAnnotation {
     std::string name;
     TypeExprPtr type;
     bool implicitThis; // :> vs :
+    bool isFoul = false;
 };
 
 struct Param {
@@ -430,10 +431,23 @@ struct VisibilityBlock {
     >> items;
 };
 
+struct TraitDef {
+    SourceLocation location;
+    std::string name;
+    std::vector<std::string> typeParams;
+    // required method signatures (TypeAnnotation) and optional default
+    // implementations (FunctionDef) — mixed order is allowed.
+    std::vector<std::variant<
+        std::unique_ptr<TypeAnnotation>,
+        std::unique_ptr<FunctionDef>
+    >> body;
+};
+
 struct MakeDef {
     SourceLocation location;
     TypeExprPtr target;
     bool isFinal = false;
+    std::vector<std::string> implements;  // trait names claimed by this block
     std::vector<std::variant<
         std::unique_ptr<FunctionDef>,
         std::unique_ptr<TypeAnnotation>,
@@ -473,6 +487,7 @@ using ModuleItem = std::variant<
     std::unique_ptr<ModuleDef>,
     std::unique_ptr<TypeDef>,
     std::unique_ptr<RecordDef>,
+    std::unique_ptr<TraitDef>,
     std::unique_ptr<MakeDef>,
     std::unique_ptr<FunctionDef>,
     std::unique_ptr<CompiledBlock>,
@@ -492,6 +507,7 @@ using TopLevelItem = std::variant<
     std::unique_ptr<ModuleDef>,
     std::unique_ptr<TypeDef>,
     std::unique_ptr<RecordDef>,
+    std::unique_ptr<TraitDef>,
     std::unique_ptr<MakeDef>,
     std::unique_ptr<FunctionDef>,
     std::unique_ptr<CompiledBlock>,

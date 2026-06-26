@@ -1,0 +1,7 @@
+# Two typed overloads form a set; a Float argument matches neither,
+# and the checker lists both candidates in the error.
+let process(n: Integer) do n * 2 end
+let process(s: String) do s + "!" end
+main do
+  IO.printLine(process(3.14))
+end

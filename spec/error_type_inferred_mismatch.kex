@@ -1,0 +1,6 @@
+# TypeVar unification: n * 2 constrains n to Number,
+# so double("hello") is caught without an explicit annotation.
+let double(n) = n * 2
+main do
+  IO.printLine(double("hello"))
+end

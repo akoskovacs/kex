@@ -1,0 +1,5 @@
+# even? requires Integer; constrains the TypeVar without annotation.
+let classifyParity(n) = n.even?
+main do
+  IO.printLine(classifyParity("hello"))
+end

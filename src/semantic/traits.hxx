@@ -15,6 +15,7 @@ struct Signature {
     std::string name;
     std::vector<TypePtr> params;
     TypePtr result;
+    bool isFoul = false;
 };
 
 struct TraitDef {

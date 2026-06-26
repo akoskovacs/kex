@@ -80,6 +80,7 @@ auto SignatureTable::withStdlib() -> SignatureTable {
     sig("filter",{Type::list(genA()), Type::func({genA()}, Type::boolean())}, Type::list(genA()));
     sig("reject",{Type::list(genA()), Type::func({genA()}, Type::boolean())}, Type::list(genA()));
     sig("each",  {Type::list(genA()), Type::func({genA()}, Type::unit())}, Type::unit());
+    sig("each",  {Type::map(genA(), genE()), Type::func({genA(), genE()}, Type::unit())}, Type::unit());
     sig("reduce",{Type::list(genA()), genE(), Type::func({genE(), genA()}, genE())}, genE());
     sig("any?",  {Type::list(genA()), Type::func({genA()}, Type::boolean())}, Type::boolean());
     sig("all?",  {Type::list(genA()), Type::func({genA()}, Type::boolean())}, Type::boolean());
@@ -92,8 +93,10 @@ auto SignatureTable::withStdlib() -> SignatureTable {
     sig("min",   {Type::list(genA())}, genA());
     sig("max",   {Type::list(genA())}, genA());
     sig("sum",   {Type::list(numberLike())}, numberLike());
-    sig("join",  {Type::list(genA()), Type::string()}, Type::string());
-    sig("join",  {Type::list(genA())}, Type::string());
+    sig("join",  {Type::list(Type::string()), Type::string()}, Type::string());
+    sig("join",  {Type::list(Type::string())}, Type::string());
+    sig("join",  {Type::string(), Type::string()}, Type::string());
+    sig("join",  {Type::string()}, Type::string());
     sig("flatten",{Type::list(Type::list(genA()))}, Type::list(genA()));
     sig("zip",   {Type::list(genA()), Type::list(genE())},
                  Type::list(Type::tuple({genA(), genE()})));
@@ -116,6 +119,10 @@ auto SignatureTable::withStdlib() -> SignatureTable {
     sig("startsWith?", {Type::string(), Type::string()}, Type::boolean());
     sig("endsWith?",   {Type::string(), Type::string()}, Type::boolean());
     sig("chars",       {Type::string()}, Type::list(Type::charT()));
+    // IO — accept any value; result is Unit (used for side-effect checking)
+    sig("printLine", {genA()}, Type::unit());
+    sig("print",     {genA()}, Type::unit());
+    sig("readLine",  {}, Type::string());
 
     return table;
 }

@@ -1,0 +1,15 @@
+# @field accesses inside a make block are typed against the record's field declarations.
+# @width is Integer and @label is String; adding them is a compile-time error.
+record Box do
+  width : Integer
+  label : String
+end
+make Box do
+  let badOp do
+    @width + @label
+  end
+end
+main do
+  let b = Box { width: 10, label: "hello" }
+  IO.printLine(b.badOp)
+end

@@ -36,6 +36,7 @@ enum class TokenType {
     Then,
     This,
     Timeout,
+    Trait,
     True,
     Type,
     Using,

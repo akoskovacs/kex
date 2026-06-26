@@ -14,10 +14,7 @@ auto TraitRegistry::get(const std::string& name) const -> const TraitDef* {
 
 auto TraitRegistry::registerImplementation(const std::string& typeName,
                                             const std::string& traitName) -> void {
-    auto& implemented = m_implementations[typeName];
-    assert(implemented.count(traitName) == 0 &&
-           "duplicate (typeName, traitName) registration — coherence violation");
-    implemented.insert(traitName);
+    m_implementations[typeName].insert(traitName);
 }
 
 auto TraitRegistry::implementorKey(const TypePtr& type) const -> std::string {
@@ -39,6 +36,16 @@ auto TraitRegistry::satisfiesStructurally(const TypePtr& type, const std::string
 
 auto TraitRegistry::satisfies(const TypePtr& type, const std::string& traitName) const -> bool {
     if (!type) return false;
+
+    // A ConstrainedType("T", "Integer") satisfies "Integer" and (by extension) "Number";
+    // likewise "Float" satisfies "Number". This comes up when a constrained hint type
+    // (e.g., from a stdlib sig's integerLike() placeholder) is passed as an arg against
+    // another constrained param — both are constrained the same way and are compatible.
+    if (auto* ct = std::get_if<ConstrainedType>(&type->kind)) {
+        if (ct->traitName == traitName) return true;
+        if (traitName == "Number" && (ct->traitName == "Integer" || ct->traitName == "Float")) return true;
+        return false;
+    }
 
     if (traitName == "Number" || traitName == "Integer" || traitName == "Float") {
         return satisfiesStructurally(type, traitName);

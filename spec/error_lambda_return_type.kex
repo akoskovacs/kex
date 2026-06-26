@@ -1,0 +1,6 @@
+# filter expects the block to return Bool.
+# Returning an Integer instead is a type error.
+main do
+  let nums = [1, 2, 3]
+  nums.filter { |x| x + 1 }
+end

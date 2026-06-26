@@ -86,14 +86,28 @@ record_field = LOWER_IDENT COLON type_expr ( EQUALS expr )? ;
 
 static_block = STATIC DO module_item* END ;
 
+(* ===== Traits ===== *)
+
+trait_def = TRAIT UPPER_IDENT ( LESS_THAN type_params GREATER_THAN )? DO trait_body END ;
+
+trait_body = trait_item* ;
+
+trait_item
+  = type_annotation               (* required pure method: `name : type` *)
+  | FOUL type_annotation          (* required foul method: `foul name : type` *)
+  | function_def                  (* default implementation (optional for implementors) *)
+  ;
+
 (* ===== Make Blocks ===== *)
 
-make_def = MAKE make_target DO make_body END ;
-
-make_target
-  = FINAL COLON type_expr
-  | type_expr
+make_def
+  = MAKE make_target ( COMMA IMPLEMENT COLON trait_list )? DO make_body END
+  | MAKE FINAL COLON make_target DO make_body END
   ;
+
+trait_list = UPPER_IDENT ( COMMA UPPER_IDENT )* ;
+
+make_target = type_expr ;
 
 make_body = make_item* ;
 

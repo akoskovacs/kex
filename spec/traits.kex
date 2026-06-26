@@ -1,0 +1,24 @@
+# Trait declarations and `make Type implement: Trait` blocks.
+# The checker verifies that all required methods are provided.
+
+trait Describable do
+  describe : () -> String
+end
+
+trait Scorable do
+  score : () -> Integer
+end
+
+record Player do
+  name : String
+  points : Integer
+end
+
+make Player, implement: Describable, Scorable do
+  let describe = "Player(${@name})"
+  let score = @points
+end
+
+main do
+  IO.printLine("trait check ok")
+end

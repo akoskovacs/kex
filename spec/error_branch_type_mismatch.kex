@@ -1,0 +1,5 @@
+# then/else with incompatible branch types is a compile-time error.
+let f(b) = b then 42 else "hello"
+main do
+  IO.printLine(f(true))
+end

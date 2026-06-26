@@ -87,6 +87,7 @@ auto Parser::parseTopLevelItem() -> ast::TopLevelItem {
     }
     if (check(TokenType::Type)) return parseTypeDef();
     if (check(TokenType::Record)) return parseRecordDef();
+    if (check(TokenType::Trait)) return parseTraitDef();
     if (check(TokenType::Make)) return parseMakeDef();
     if (check(TokenType::Compiled)) return parseCompiledBlock();
     if (check(TokenType::Using)) return parseUsingBlock();
@@ -160,6 +161,8 @@ auto Parser::parseModuleDef() -> std::unique_ptr<ast::ModuleDef> {
             mod->body.push_back(parseTypeDef());
         } else if (check(TokenType::Record)) {
             mod->body.push_back(parseRecordDef());
+        } else if (check(TokenType::Trait)) {
+            mod->body.push_back(parseTraitDef());
         } else if (check(TokenType::Make)) {
             mod->body.push_back(parseMakeDef());
         } else if (check(TokenType::Compiled)) {
@@ -431,6 +434,62 @@ auto Parser::parseRecordDef() -> std::unique_ptr<ast::RecordDef> {
 
 // ===== Make =====
 
+auto Parser::parseTraitDef() -> std::unique_ptr<ast::TraitDef> {
+    auto def = std::make_unique<ast::TraitDef>();
+    def->location = currentLocation();
+    expect(TokenType::Trait, "Expected 'trait'");
+    {
+        auto tok = expect(TokenType::UpperIdent, "Expected trait name");
+        if (tok.value.size() == 1)
+            error("Trait name '" + tok.value + "' is a single uppercase letter — those are reserved for type parameters");
+        def->name = tok.value;
+    }
+    // Optional type params: `trait Functor<F> do ...`
+    if (match(TokenType::LessThan)) {
+        while (!check(TokenType::GreaterThan) && !atEnd()) {
+            def->typeParams.push_back(
+                expect(TokenType::UpperIdent, "Expected type param").value);
+            if (!check(TokenType::GreaterThan)) expect(TokenType::Comma, "Expected ','");
+        }
+        expect(TokenType::GreaterThan, "Expected '>'");
+    }
+    expect(TokenType::Do, "Expected 'do' after trait name");
+    skipNewlines();
+
+    while (!check(TokenType::End) && !atEnd()) {
+        if (check(TokenType::Foul) &&
+            peekNext().type == TokenType::LowerIdent) {
+            // Peek ahead: `foul name :` → foul required method sig
+            //             `foul name(` or `foul name do` → foul default impl
+            size_t saved = m_pos;
+            advance(); // consume foul
+            bool isAnnotation = peekNext().type == TokenType::Colon ||
+                                peekNext().type == TokenType::TypeAnnotation;
+            m_pos = saved;
+            if (isAnnotation) {
+                advance(); // consume foul
+                auto ann = parseTypeAnnotation();
+                ann->isFoul = true;
+                def->body.push_back(std::move(ann));
+            } else {
+                advance(); // consume foul
+                def->body.push_back(parseFunctionDef(true));
+            }
+        } else if (check(TokenType::Let)) {
+            def->body.push_back(parseFunctionDef(false));
+        } else if (check(TokenType::LowerIdent)) {
+            // Required method signature: `methodName : type`
+            def->body.push_back(parseTypeAnnotation());
+        } else {
+            error("Unexpected token in trait body");
+        }
+        skipNewlines();
+    }
+
+    expect(TokenType::End, "Expected 'end' to close trait");
+    return def;
+}
+
 auto Parser::parseMakeDef() -> std::unique_ptr<ast::MakeDef> {
     auto def = std::make_unique<ast::MakeDef>();
     def->location = currentLocation();
@@ -442,6 +501,34 @@ auto Parser::parseMakeDef() -> std::unique_ptr<ast::MakeDef> {
     }
 
     def->target = parseTypeExpr();
+
+    // Optional `, implement: Trait1, Trait2` clause
+    // Syntax: `make Something, implement: Showable, Comparable do`
+    if (check(TokenType::Comma) && peekNext().type == TokenType::LowerIdent) {
+        auto savedPos = m_pos;
+        advance(); // ","
+        if (check(TokenType::LowerIdent) && peek().value == "implement" &&
+            peekNext().type == TokenType::Colon) {
+            advance(); // "implement"
+            advance(); // ":"
+            {
+                auto tok = expect(TokenType::UpperIdent, "Expected trait name");
+                if (tok.value.size() == 1)
+                    error("Trait name '" + tok.value + "' is a single uppercase letter — those are reserved for type parameters");
+                def->implements.push_back(tok.value);
+            }
+            while (check(TokenType::Comma) && peekNext().type == TokenType::UpperIdent) {
+                advance(); // ","
+                auto tok = expect(TokenType::UpperIdent, "Expected trait name");
+                if (tok.value.size() == 1)
+                    error("Trait name '" + tok.value + "' is a single uppercase letter — those are reserved for type parameters");
+                def->implements.push_back(tok.value);
+            }
+        } else {
+            m_pos = savedPos; // not an implement clause, backtrack
+        }
+    }
+
     expect(TokenType::Do, "Expected 'do' after make target");
     skipNewlines();
 

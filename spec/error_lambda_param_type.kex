@@ -1,0 +1,7 @@
+# Lambda params in block arguments are constrained from the list element type.
+# [1, 2, 3].map { |x| x + "oops" } — x is Integer (from List<Integer>),
+# adding a String is a type error.
+main do
+  let nums = [1, 2, 3]
+  nums.map { |x| x + "oops" }
+end

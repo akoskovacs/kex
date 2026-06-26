@@ -32,6 +32,7 @@ private:
     auto parseModuleDef() -> std::unique_ptr<ast::ModuleDef>;
     auto parseTypeDef() -> std::unique_ptr<ast::TypeDef>;
     auto parseRecordDef() -> std::unique_ptr<ast::RecordDef>;
+    auto parseTraitDef() -> std::unique_ptr<ast::TraitDef>;
     auto parseMakeDef() -> std::unique_ptr<ast::MakeDef>;
     auto parseFunctionDef(bool isFoul = false) -> std::unique_ptr<ast::FunctionDef>;
     auto parseCompiledBlock() -> std::unique_ptr<ast::CompiledBlock>;

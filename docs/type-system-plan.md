@@ -1,10 +1,11 @@
 # Kex Type System Plan
 
 Status (2026-06-26): phases 1, 2 (bignum half only), 3, 4, 4.5, 5
-(scoped), 6, and 7 (infrastructure) are implemented. `kex run` gates on
-`kex --check` by default; use `--no-check` to skip. spec suite is 61/61.
-See the per-phase notes in Rollout phases for exactly what shipped vs.
-was scoped out. Originally written 2026-06-23.
+(scoped + 5a extended + lambda inference + make-block GenericType fix), 6,
+and 7 (infrastructure) are implemented. `kex run` gates on `kex --check`
+by default; use `--no-check` to skip (also honoured via `# kex: no-check`
+file pragma). spec suite is 78/78. All 30 examples checker-clean. See the per-phase notes in Rollout phases for exactly what
+shipped vs. was scoped out. Originally written 2026-06-23.
 
 ## Problem
 
@@ -811,19 +812,64 @@ running the whole pipeline. Concretely:
    promotion rules and sized-param declarations that's worth keeping in
    mind once phase 2 actually adds runtime width/overflow semantics; this
    relaxation may need revisiting at that point, not just deleting.
-   - **5a. NOT STARTED.** Type-variable infrastructure: generalization and
-     instantiation.
-     Decide, per function, when its inferred type gets generalized into a
-     polymorphic scheme (`let`-polymorphism — e.g. `identity` ending up
-     usable at multiple types at different call sites) versus staying
-     monomorphic, and how a scheme gets instantiated with fresh type
-     variables at each call site. Consume the standalone top-level/module
-     `TypeAnnotation` signatures (see that section above) and the existing
-     inline `param : type_expr` syntax where present as the declared case,
-     falling back to this inference machinery otherwise. This sub-phase is
-     also the prerequisite for representing user-defined generic types at
-     all (records/functions with type parameters) — nothing later in this
-     plan should assume generics "just work" without it.
+   - **5a. DONE (unification slice).** TypeVar substitution map
+     (`m_subst: unordered_map<int, TypePtr>`) with `resolve`/`unifyVar`
+     methods in `TypeChecker`. `inferBinaryOp` now propagates type
+     constraints from binary-op operands back to the TypeVars that
+     represent unannotated parameters: arithmetic ops (`-`, `*`, `/`, `%`)
+     constrain operand TypeVars to `Number`; `+` constrains to `String`
+     when the concrete side is `String`/`Char`, to `Number` when it's
+     numeric; ordered comparisons (`<`, `>`, `<=`, `>=`) constrain the
+     TypeVar to match the concrete operand. `checkFunctionDef` resolves all
+     param TypeVars through `m_subst` before storing the `Signature`, so
+     `let double(n) = n * 2` records `double : Number -> Integer` — and
+     `double("hello")` is caught at compile time with no annotation.
+     **Extended in 5a-ext session:** TypeVar constraints broadened to cover
+     all binary ops (`+` string/numeric inference, `&&`/`||` Bool
+     constraint, ordered comparisons), unary `-` (Number), `!` (Bool),
+     `if`/`while`/`then-else` condition positions (all constrain their
+     condition TypeVar to Bool), call-site back-propagation (when a
+     unique signature matches and an argument is a TypeVar, it's unified
+     with the concrete param type — so `s.split(",")` constrains `s` to
+     String without annotation), branch type consistency (`then/else` and
+     `if/else` arms must agree on a type — mismatched arms are now compile
+     errors), match arm type consistency (all arms must return compatible
+     types), typed overload set accumulation (`let f(n: Integer)` plus a
+     second `let f(s: String)` now correctly build an overload set rather
+     than the second overwriting the first, so `process(3.14)` against
+     both overloads lists all candidates in the error), record field type
+     registry (`m_recordFields` pre-pass over all `RecordDef`s — `u.age`
+     on a `User` record returns `Integer`, and a TypeVar receiver of a
+     field access gets unified with the record type when the field name is
+     unambiguous — so `let distance(p) do p.x * p.x ... end` infers `p :
+     Point` without annotation), and `ThisExpr` / `@field` typing inside
+     `make` blocks (`m_currentMakeType` tracks the current record name so
+     `@width + @label` inside `make Box do` reports a type mismatch when
+     the two fields have incompatible types). 76/76 specs.
+     **Not done:** full let-polymorphism (generalizing a TypeVar into a
+     scheme instantiated fresh per call site); the current approach is
+     first-writer-wins monomorphic unification — enough for the common
+     "numeric/string mismatch" case, but `identity(42)` and
+     `identity("hi")` from the same call site still both resolve to the
+     first concrete binding. This is the full slice intentionally shipped;
+     the generalization half remains below as the future 5a-gen sub-phase.
+   - **5a-lambda. DONE.** Lambda/block param type inference from call-site
+     signatures. `resolveBlockHints` does a shallow generic-placeholder
+     substitution (negative TypeVar IDs resolved against the concrete arg
+     types) to build hint param types, `inferBlock` uses those hints to
+     pre-seed the lambda params (instead of fresh TypeVars) before the body
+     is checked. `[1,2,3].map { |x| x + "oops" }` is now caught because
+     `x` is constrained to `Integer` from the list element type, and adding
+     a String to Integer is flagged. `filter { |x| x + 1 }` is caught
+     because the block returns Integer, not Bool. Paramless blocks
+     (`do...end` with no `|params|` list) stay permissive (return
+     `Type::unknown()`) so they match any FuncType without arity errors.
+     Also added `each(Map<K,V>, (K,V)->())` to the stdlib sig table for the
+     `ENV.each do |key, value|` pattern. Also implemented `# kex: no-check`
+     file pragma in `main.cxx` (scan first 10 lines for the comment and set
+     `skipCheck = true` if found — needed so files like
+     `spec/mutating_calls.kex` and `spec/testing_dsl.spec.kex` run without
+     the checker blocking intentionally-runtime-only behaviour). 78/78 specs.
    - **5b. NOT STARTED.** Mutual recursion via call-graph grouping.
      Build the call graph
      across `FunctionDef`s, compute strongly-connected components, and
