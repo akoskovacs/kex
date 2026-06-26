@@ -1504,14 +1504,18 @@ auto Parser::parseIfExpr() -> ast::ExprPtr {
     std::vector<std::pair<ast::ExprPtr, std::vector<ast::ExprPtr>>> elifs;
     while (match(TokenType::Elif)) {
         m_noDoBlocks = true;
+        m_noThenExpr = true;
         auto elifCond = parseExpr();
         m_noDoBlocks = false;
-        skipNewlines();
+        m_noThenExpr = false;
+        bool elifInline = inlineThen && match(TokenType::Then);
+        if (!elifInline) skipNewlines();
         std::vector<ast::ExprPtr> elifBody;
         while (!check(TokenType::End) && !check(TokenType::Else) &&
                !check(TokenType::Elif) && !atEnd()) {
             elifBody.push_back(parseExpr());
-            skipNewlines();
+            if (!elifInline) skipNewlines();
+            else break;
         }
         elifs.push_back({std::move(elifCond), std::move(elifBody)});
     }

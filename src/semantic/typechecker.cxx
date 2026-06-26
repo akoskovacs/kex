@@ -1224,7 +1224,18 @@ auto TypeChecker::inferExpr(const ast::Expr& expr) -> TypePtr {
             auto thenType = inferBody(node.thenBody);
             for (const auto& [cond, body] : node.elifs) {
                 if (cond) inferExpr(*cond);
-                inferBody(body);
+                auto elifType = inferBody(body);
+                auto rt = resolve(thenType);
+                auto re = resolve(elifType);
+                bool thenPermissive = std::holds_alternative<TypeVar>(rt->kind) ||
+                                      std::holds_alternative<UnknownType>(rt->kind);
+                bool elifPermissive = std::holds_alternative<TypeVar>(re->kind) ||
+                                      std::holds_alternative<UnknownType>(re->kind);
+                if (!thenPermissive && !elifPermissive &&
+                    !argMatchesParam(re, rt) && !argMatchesParam(rt, re)) {
+                    error(expr.location, "Branch type mismatch: 'if' returns " +
+                          typeToString(rt) + " but 'elif' returns " + typeToString(re));
+                }
             }
             if (node.elseBody) {
                 auto elseType = inferBody(*node.elseBody);
@@ -1836,6 +1847,48 @@ auto TypeChecker::checkCall(const std::string& name, const std::vector<TypePtr>&
             }
         }
         if (allMatch) fullMatches.push_back(&sig);
+    }
+
+    // 5c: Pick the most-specific full match when there are several.
+    // Specificity per param: concrete named/list/func type (2) > trait-constrained (1) > TypeVar/Unknown (0).
+    // A signature A dominates B if A >= B at every position and > at least one.
+    // If no unique winner exists, fall back to the first match (preserves previous behavior for
+    // untyped overloads like pattern-clause functions where all params are TypeVars).
+    if (fullMatches.size() > 1) {
+        auto paramSpec = [](const TypePtr& p) -> int {
+            if (std::holds_alternative<TypeVar>(p->kind) ||
+                std::holds_alternative<UnknownType>(p->kind)) return 0;
+            if (std::holds_alternative<ConstrainedType>(p->kind)) return 1;
+            return 2;
+        };
+        auto dominates = [&](const Signature* a, const Signature* b) {
+            bool aWins = false;
+            for (size_t i = 0; i < a->params.size(); i++) {
+                int sa = paramSpec(a->params[i]);
+                int sb = paramSpec(b->params[i]);
+                if (sb > sa) return false;
+                if (sa > sb) aWins = true;
+            }
+            return aWins;
+        };
+        const Signature* best = nullptr;
+        for (const auto* cand : fullMatches) {
+            bool dominated = false;
+            for (const auto* other : fullMatches) {
+                if (other == cand) continue;
+                if (dominates(other, cand)) { dominated = true; break; }
+            }
+            if (!dominated) {
+                if (!best) { best = cand; }
+                // Multiple undominated candidates: ambiguous, keep first
+            }
+        }
+        if (best) {
+            // Rebuild fullMatches with best first so the code below uses it
+            std::vector<const Signature*> reordered = {best};
+            for (const auto* s : fullMatches) if (s != best) reordered.push_back(s);
+            fullMatches = std::move(reordered);
+        }
     }
 
     if (fullMatches.size() >= 1) {

@@ -2,7 +2,8 @@
 
 Status (2026-06-26): phases 1, 2 (bignum half only), 3, 4, 4.5, 5
 (scoped + 5a extended + lambda inference + make-block GenericType fix +
-5b topological ordering for forward references), 6,
+5b topological ordering for forward references + 5c overload specificity
+tie-break + inline elif + elif type-checking), 6,
 and 7 (infrastructure) are implemented. `kex run` gates on `kex --check`
 by default; use `--no-check` to skip (also honoured via `# kex: no-check`
 file pragma). spec suite is 78/78. All 30 examples checker-clean. See the per-phase notes in Rollout phases for exactly what
@@ -884,19 +885,14 @@ running the whole pipeline. Concretely:
      result gets unified across both function bodies before either is
      finalized, same as before. Overloaded functions (same name, multiple
      FunctionDefs) are all checked as a group under one sorted slot.
-   - **5c. NOT STARTED.** Parameter-type overload resolution
-     (Function overloading
-     section), once 5a/5b produce a real signature per function — resolving
-     overload sets by parameter type, applying the trait-specificity
-     tie-break, and reporting ambiguity/no-match per the Error UX template.
-     Return-type overloading is **not** part of this phase or any other —
-     deferred indefinitely, see that section.
-     **Current interim behavior:** `checkCall` already tolerates multiple
-     full matches (silently picks the first, no diagnostic) because
-     ordinary pattern-clause overloading (`len([])`/`len([_|t])`) routinely
-     produces this when params are unannotated — that's the right safe
-     default until 5c adds the real tie-break, not a bug to "fix" by
-     erroring.
+   - **5c. DONE (specificity-based tie-break).** When multiple overloads
+     fully match a call, `checkCall` now picks the most specific one via a
+     `dominates` ranking: concrete named/list/func types (score 2) beat
+     trait-constrained params (score 1) beat TypeVar/Unknown (score 0). A
+     candidate is chosen only if no other candidate dominates it; when
+     multiple undominated candidates remain (genuine ambiguity), the first
+     match is kept (safe default for unannotated pattern-clause overloads).
+     Return-type overloading is **not** part of this phase — deferred.
 6. **DONE. `kex run` gates on `kex --check`; `--no-check` skips.**
    Two 6a audit rounds and a 6b round (prior session + this session)
    brought checker false positives to zero across all 30 example files;

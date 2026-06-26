@@ -1399,6 +1399,20 @@ int main() {
                 "main do IO.printLine(isEven(4)) end\n"
             ));
         });
+
+        it("inline if-then-elif-then-else parses and runs", []() {
+            assertTrue(noErrors(
+                "let classify(n) = if n > 0 then \"pos\" elif n < 0 then \"neg\" else \"zero\" end\n"
+                "main do IO.printLine(classify(5)) end\n"
+            ));
+        });
+
+        it("inline elif branch type mismatch is an error", []() {
+            assertTrue(hasError(
+                "let classify(n) = if n > 0 then \"pos\" elif n < 0 then 0 else \"zero\" end\n"
+                "main do IO.printLine(classify(5)) end\n"
+            , "Branch type mismatch"));
+        });
     });
 
     describe("ShorthandLambda typing", []() {
@@ -1440,6 +1454,37 @@ int main() {
                 "  IO.printLine(evens.join(\", \"))\n"
                 "end\n"
             , "expects argument 1 to be Integer, but got String"));
+        });
+    });
+
+    describe("overload tie-breaking (5c)", []() {
+        it("concrete overload beats trait-constrained overload for a concrete arg", []() {
+            // `describe` has two overloads: Integer->String (specific) and Printable->String (generic)
+            // Passing an Integer should pick the Integer overload (returns "number: ...")
+            assertTrue(noErrors(
+                "trait Printable do\n"
+                "  show : This -> String\n"
+                "end\n"
+                "make Integer, implement: Printable do\n"
+                "  let show(n) = n.to_s()\n"
+                "end\n"
+                "show : Integer -> String\n"
+                "let show(n: Integer) = \"number\"\n"
+                "show : Printable -> String\n"
+                "let show(p: Printable) = \"printable\"\n"
+                "main do IO.printLine(show(42)) end\n"
+            ));
+        });
+
+        it("unannotated overload loses to annotated when arg matches annotated param", []() {
+            // Two overloads: one annotated (String->Int), one unannotated (TypeVar->Int)
+            // Passing a String should pick the annotated overload
+            assertTrue(noErrors(
+                "len : String -> Int\n"
+                "let len(s: String) = s.length()\n"
+                "let len(x) = 0\n"
+                "main do IO.printLine(len(\"hi\")) end\n"
+            ));
         });
     });
 
