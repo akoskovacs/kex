@@ -512,6 +512,9 @@ auto TypeChecker::resolveTypeExpr(const ast::TypeExpr& typeExpr,
             // `This` inside a make block refers to the implementing type.
             if (last == "This" && node.parts.size() == 1 && m_inMakeBlock && !m_currentMakeType.empty())
                 return Type::named(m_currentMakeType);
+            // `Void` — the bottom/uninhabited type for never-returning functions.
+            if (last == "Void" && node.parts.size() == 1)
+                return Type::voidType();
             // Single-letter identifiers are generic type variables (docs/
             // types.md Generics) — reuse the same TypeVar for repeated
             // occurrences of the same letter within this clause.
@@ -1222,36 +1225,41 @@ auto TypeChecker::inferExpr(const ast::Expr& expr) -> TypePtr {
                 }
             }
             auto thenType = inferBody(node.thenBody);
+            TypePtr branchType = resolve(thenType);  // tracks the first concrete non-Void branch
             for (const auto& [cond, body] : node.elifs) {
                 if (cond) inferExpr(*cond);
-                auto elifType = inferBody(body);
-                auto rt = resolve(thenType);
-                auto re = resolve(elifType);
-                bool thenPermissive = std::holds_alternative<TypeVar>(rt->kind) ||
-                                      std::holds_alternative<UnknownType>(rt->kind);
-                bool elifPermissive = std::holds_alternative<TypeVar>(re->kind) ||
-                                      std::holds_alternative<UnknownType>(re->kind);
-                if (!thenPermissive && !elifPermissive &&
-                    !argMatchesParam(re, rt) && !argMatchesParam(rt, re)) {
+                auto elifType = resolve(inferBody(body));
+                auto rt = resolve(branchType);
+                bool rtPermissive = std::holds_alternative<TypeVar>(rt->kind) ||
+                                    std::holds_alternative<UnknownType>(rt->kind) ||
+                                    std::holds_alternative<VoidType>(rt->kind);
+                bool rePermissive = std::holds_alternative<TypeVar>(elifType->kind) ||
+                                    std::holds_alternative<UnknownType>(elifType->kind) ||
+                                    std::holds_alternative<VoidType>(elifType->kind);
+                if (!rtPermissive && !rePermissive &&
+                    !argMatchesParam(elifType, rt) && !argMatchesParam(rt, elifType)) {
                     error(expr.location, "Branch type mismatch: 'if' returns " +
-                          typeToString(rt) + " but 'elif' returns " + typeToString(re));
+                          typeToString(rt) + " but 'elif' returns " + typeToString(elifType));
                 }
+                if (rtPermissive && !rePermissive) branchType = elifType;
             }
             if (node.elseBody) {
-                auto elseType = inferBody(*node.elseBody);
-                auto rt = resolve(thenType);
-                auto re = resolve(elseType);
+                auto elseType = resolve(inferBody(*node.elseBody));
+                auto rt = resolve(branchType);
                 bool thenPermissive = std::holds_alternative<TypeVar>(rt->kind) ||
-                                      std::holds_alternative<UnknownType>(rt->kind);
-                bool elsePermissive = std::holds_alternative<TypeVar>(re->kind) ||
-                                      std::holds_alternative<UnknownType>(re->kind);
+                                      std::holds_alternative<UnknownType>(rt->kind) ||
+                                      std::holds_alternative<VoidType>(rt->kind);
+                bool elsePermissive = std::holds_alternative<TypeVar>(elseType->kind) ||
+                                      std::holds_alternative<UnknownType>(elseType->kind) ||
+                                      std::holds_alternative<VoidType>(elseType->kind);
                 if (!thenPermissive && !elsePermissive &&
-                    !argMatchesParam(re, rt) && !argMatchesParam(rt, re)) {
+                    !argMatchesParam(elseType, rt) && !argMatchesParam(rt, elseType)) {
                     error(expr.location, "Branch type mismatch: 'if' returns " +
-                          typeToString(rt) + " but 'else' returns " + typeToString(re));
+                          typeToString(rt) + " but 'else' returns " + typeToString(elseType));
                 }
+                if (thenPermissive && !elsePermissive) branchType = elseType;
             }
-            return resolve(thenType);
+            return resolve(branchType);
         }
         else if constexpr (std::is_same_v<T, ast::MatchExpr>) {
             TypePtr subjectType = node.subject ? inferExpr(*node.subject) : Type::unknown();
@@ -1318,7 +1326,7 @@ auto TypeChecker::inferExpr(const ast::Expr& expr) -> TypePtr {
         }
         else if constexpr (std::is_same_v<T, ast::LoopExpr>) {
             inferBody(node.body);
-            return Type::unit();
+            return Type::voidType();  // infinite loop never returns
         }
         else if constexpr (std::is_same_v<T, ast::WhileExpr>) {
             if (node.condition) {
@@ -1595,6 +1603,9 @@ auto TypeChecker::argMatchesParam(const TypePtr& argType, const TypePtr& paramTy
         return std::holds_alternative<UnknownType>(t->kind) || std::holds_alternative<TypeVar>(t->kind);
     };
     if (isPermissive(argType) || isPermissive(paramType)) return true;
+    // Void is the bottom type — a Void-typed expression (never returns) is
+    // compatible with any expected type.
+    if (std::holds_alternative<VoidType>(argType->kind)) return true;
     if (auto* constrained = std::get_if<ConstrainedType>(&paramType->kind)) {
         return m_traits.satisfies(argType, constrained->traitName);
     }

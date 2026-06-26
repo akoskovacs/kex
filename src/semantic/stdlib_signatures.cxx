@@ -123,6 +123,8 @@ auto SignatureTable::withStdlib() -> SignatureTable {
     sig("printLine", {genA()}, Type::unit());
     sig("print",     {genA()}, Type::unit());
     sig("readLine",  {}, Type::string());
+    // die — never returns (diverges), so typed as Void (bottom type)
+    sig("die",       {Type::string()}, Type::voidType());
 
     return table;
 }

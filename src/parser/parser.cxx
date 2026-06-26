@@ -1522,7 +1522,7 @@ auto Parser::parseIfExpr() -> ast::ExprPtr {
 
     std::optional<std::vector<ast::ExprPtr>> elseBody;
     if (match(TokenType::Else)) {
-        if (!inlineThen) skipNewlines();
+        skipNewlines();  // always skip: inline-else can have its expr on the next line
         elseBody = std::vector<ast::ExprPtr>{};
         if (inlineThen) {
             elseBody->push_back(parseExpr()); // single expression before `end`
@@ -1534,6 +1534,7 @@ auto Parser::parseIfExpr() -> ast::ExprPtr {
         }
     }
 
+    skipNewlines();
     expect(TokenType::End, "Expected 'end' to close if");
 
     expr->kind = ast::IfExpr{

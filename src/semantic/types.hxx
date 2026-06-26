@@ -62,6 +62,11 @@ struct TypeVar {
 
 struct UnknownType {};
 
+// Bottom type — for expressions that never return (infinite loop, panic, exit).
+// Unifies with any type as a universal subtype: a Void-typed branch is compatible
+// with any other branch type because it never actually produces a value at runtime.
+struct VoidType {};
+
 // A signature-table placeholder meaning "any type satisfying `traitName`"
 // (e.g. `even? : T -> Bool` where T is constrained to Integer). `varName`
 // is for display only ("T"); the constraint itself is consulted via
@@ -85,6 +90,7 @@ struct Type {
         UnionType,
         TypeVar,
         UnknownType,
+        VoidType,
         ConstrainedType
     > kind;
 
@@ -95,6 +101,7 @@ struct Type {
     static auto atom() -> TypePtr;
     static auto unit() -> TypePtr;
     static auto unknown() -> TypePtr;
+    static auto voidType() -> TypePtr;
     static auto named(const std::string& name, std::vector<TypePtr> args = {}) -> TypePtr;
     static auto func(std::vector<TypePtr> params, TypePtr result) -> TypePtr;
     static auto list(TypePtr element) -> TypePtr;

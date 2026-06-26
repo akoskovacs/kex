@@ -61,6 +61,14 @@ auto Evaluator::registerIOBuiltins() -> void {
     m_globalEnv->define("IO::put", m_globalEnv->get("IO::print"));
     m_globalEnv->define("IO::putLine", m_globalEnv->get("IO::printLine"));
 
+    // die(msg) — print msg to stderr and terminate the process.
+    // Typed as String -> Void (never returns).
+    reg("die", [](std::vector<ValuePtr> args) -> ValuePtr {
+        std::string msg = args.empty() ? "program terminated" : args[0]->toString();
+        std::cerr << "fatal: " << msg << "\n";
+        std::exit(1);
+    });
+
     // IO.getLine() — reads one line from stdin. Returns String, or None at EOF.
     reg("IO::getLine", [](std::vector<ValuePtr>) -> ValuePtr {
         std::string line;

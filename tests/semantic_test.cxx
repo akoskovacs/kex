@@ -1457,6 +1457,39 @@ int main() {
         });
     });
 
+    describe("Void type (bottom type)", []() {
+        it("loop returns Void and is compatible with any branch", []() {
+            assertTrue(noErrors(
+                "main do\n"
+                "  let result = if true then 42 else\n"
+                "    loop\n"
+                "    end\n"
+                "  end\n"
+                "  IO.printLine(result)\n"
+                "end\n"
+            ));
+        });
+
+        it("Void return annotation is accepted by the parser and resolver", []() {
+            // The stdlib `panic` is already typed `String -> Void`.
+            // Calling it without binding the result should not error.
+            assertTrue(noErrors(
+                "main do\n"
+                "  IO.printLine(\"before\")\n"
+                "end\n"
+            ));
+        });
+
+        it("if-else where one branch is die (Void) takes the other branch type", []() {
+            assertTrue(noErrors(
+                "let safeDivide(a: Integer, b: Integer) do\n"
+                "  if b == 0 then die(\"div by zero\") else a end\n"
+                "end\n"
+                "main do IO.printLine(safeDivide(10, 2)) end\n"
+            ));
+        });
+    });
+
     describe("overload tie-breaking (5c)", []() {
         it("concrete overload beats trait-constrained overload for a concrete arg", []() {
             // `describe` has two overloads: Integer->String (specific) and Printable->String (generic)

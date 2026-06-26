@@ -3,7 +3,7 @@
 Status (2026-06-26): phases 1, 2 (bignum half only), 3, 4, 4.5, 5
 (scoped + 5a extended + lambda inference + make-block GenericType fix +
 5b topological ordering for forward references + 5c overload specificity
-tie-break + inline elif + elif type-checking), 6,
+tie-break + inline elif + elif type-checking + Void bottom type), 6,
 and 7 (infrastructure) are implemented. `kex run` gates on `kex --check`
 by default; use `--no-check` to skip (also honoured via `# kex: no-check`
 file pragma). spec suite is 78/78. All 30 examples checker-clean. See the per-phase notes in Rollout phases for exactly what
@@ -550,19 +550,14 @@ conversion table keyed by `(sourceType, targetType)`.
   checker limitation to fix, the other is intentional). Recommend keeping
   `UnknownType` for the internal case and adding a `DynamicType{}` (surface
   spelling `Unknown`) for the explicit one.
-- **`Void`** is the *uninhabited* (bottom) type — for functions that never
-  return a normal value (always raise, always loop, always `exit`), same
-  role as Rust's `!` or TypeScript's `never`. This is **not** the same as
-  `Unit`/`()`, which has exactly one inhabitant and means "ran to
-  completion, no meaningful result." `Void` unifies with anything (since a
-  function that never returns never produces a mismatched value at
-  runtime) — `inferBinaryOp`/call-result unification should treat `Void`
-  as compatible with every expected type, the same special-case Haskell
-  gives `undefined`/bottom. Mostly useful once the checker tracks
-  control-flow reachability (a function whose every branch raises/loops);
-  until then it can exist as a nameable type with no inference support
-  beyond "always unifies," which is enough for it to typecheck stdlib
-  functions like a hypothetical `panic(String) -> Void`.
+- **`Void`** is the *uninhabited* (bottom) type — **DONE.** `VoidType{}`
+  added to `types.hxx` variant; `Type::voidType()` factory; `typeToString`
+  returns "Void"; `resolveTypeExpr` maps the name `Void` to it; `loop`
+  expressions now return `VoidType` (they never terminate); `argMatchesParam`
+  treats Void as universally compatible (bottom-type semantics); branch
+  type checking suppresses mismatches when any branch is Void; `die :
+  String -> Void` added to stdlib_signatures. Still not tracked
+  control-flow-reachability — that remains future work.
 
 ## Function overloading (parameter types — return-type overloading deferred)
 
