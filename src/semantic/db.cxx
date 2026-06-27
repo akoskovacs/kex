@@ -3,6 +3,7 @@
 #include "collect_pass.hxx"
 #include "resolve_pass.hxx"
 #include "../lexer/lexer.hxx"
+#include <algorithm>
 #include "../parser/parser.hxx"
 #include <stdexcept>
 
@@ -146,6 +147,39 @@ auto SemanticDB::symbolAt(const std::string& file,
         }
     }
     return nullptr;
+}
+
+auto SemanticDB::completionsFor(const std::string& prefix) const -> std::vector<std::string> {
+    std::vector<std::string> results;
+
+    auto dotPos = prefix.rfind('.');
+    if (dotPos != std::string::npos) {
+        // "Module.mem" or "Type.mem" — complete members by module name or make target
+        std::string qualifier = prefix.substr(0, dotPos);
+        std::string memberPrefix = prefix.substr(dotPos + 1);
+        for (const auto& [path, state] : m_files) {
+            for (const auto& sym : state.symbols) {
+                bool matchesMod = (sym.module == qualifier);
+                bool matchesMake = (!sym.makeTarget.empty() && sym.makeTarget == qualifier);
+                if ((matchesMod || matchesMake) && sym.name.rfind(memberPrefix, 0) == 0) {
+                    results.push_back(qualifier + "." + sym.name);
+                }
+            }
+        }
+    } else {
+        // Top-level names (no module) and module names themselves
+        for (const auto& [path, state] : m_files) {
+            for (const auto& sym : state.symbols) {
+                if (sym.name.rfind(prefix, 0) == 0) {
+                    results.push_back(sym.name);
+                }
+            }
+        }
+    }
+
+    std::sort(results.begin(), results.end());
+    results.erase(std::unique(results.begin(), results.end()), results.end());
+    return results;
 }
 
 auto SemanticDB::fileState(const std::string& path) -> FileState* {

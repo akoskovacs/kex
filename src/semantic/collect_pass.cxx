@@ -1,5 +1,6 @@
 #include "collect_pass.hxx"
 #include <variant>
+#include <cctype>
 
 namespace kex::semantic {
 
@@ -65,11 +66,31 @@ auto CollectPass::collectModule(const ast::ModuleDef& mod) -> void {
     std::string savedModule = m_currentModule;
     m_currentModule = mod.name;
 
+    auto collectAnnotation = [&](const ast::TypeAnnotation& ann) {
+        // If a FunctionDef with the same name already exists in this module,
+        // don't create a duplicate — the def wins.
+        for (const auto& sym : m_state->symbols) {
+            if (sym.name == ann.name && sym.module == m_currentModule
+                    && sym.kind == SymbolKind::Function)
+                return;
+        }
+        SymbolInfo info;
+        info.name = ann.name;
+        info.kind = SymbolKind::Function;
+        info.definition = SourceLocation{std::string_view(m_state->path), 0, 0};
+        info.module = m_currentModule;
+        info.isFoul = ann.isFoul;
+        info.type = Type::unknown();
+        m_state->symbols.push_back(std::move(info));
+    };
+
     for (const auto& item : mod.body) {
-        std::visit([this](const auto& ptr) {
+        std::visit([&](const auto& ptr) {
             using T = std::decay_t<decltype(*ptr)>;
             if constexpr (std::is_same_v<T, ast::FunctionDef>) {
                 collectFunction(*ptr, m_currentModule);
+            } else if constexpr (std::is_same_v<T, ast::TypeAnnotation>) {
+                collectAnnotation(*ptr);
             } else if constexpr (std::is_same_v<T, ast::TypeDef>) {
                 collectType(*ptr, m_currentModule);
             } else if constexpr (std::is_same_v<T, ast::RecordDef>) {
@@ -88,10 +109,12 @@ auto CollectPass::collectModule(const ast::ModuleDef& mod) -> void {
                 m_state->symbols.push_back(std::move(info));
             } else if constexpr (std::is_same_v<T, ast::VisibilityBlock>) {
                 for (const auto& vitem : ptr->items) {
-                    std::visit([this](const auto& vptr) {
+                    std::visit([&](const auto& vptr) {
                         using VT = std::decay_t<decltype(*vptr)>;
                         if constexpr (std::is_same_v<VT, ast::FunctionDef>) {
                             collectFunction(*vptr, m_currentModule);
+                        } else if constexpr (std::is_same_v<VT, ast::TypeAnnotation>) {
+                            collectAnnotation(*vptr);
                         } else if constexpr (std::is_same_v<VT, ast::TypeDef>) {
                             collectType(*vptr, m_currentModule);
                         } else if constexpr (std::is_same_v<VT, ast::RecordDef>) {
@@ -99,11 +122,10 @@ auto CollectPass::collectModule(const ast::ModuleDef& mod) -> void {
                         } else if constexpr (std::is_same_v<VT, ast::MakeDef>) {
                             collectMake(*vptr, m_currentModule);
                         }
-                        // TypeAnnotation: skip (just a type sig declaration)
                     }, vitem);
                 }
             }
-            // UsingBlock, CompiledBlock, TypeAnnotation: skip
+            // UsingBlock, CompiledBlock: skip
         }, item);
     }
 
@@ -186,21 +208,94 @@ auto CollectPass::collectRecord(const ast::RecordDef& def, const std::string& mo
     info.module = module;
     info.type = Type::unknown();
     m_state->symbols.push_back(std::move(info));
+
+    // Fields are accessible as instance members (record.fieldName)
+    for (const auto& field : def.fields) {
+        SymbolInfo fi;
+        fi.name = field.name;
+        fi.kind = SymbolKind::Function; // treated as accessor for completion
+        fi.definition = SourceLocation{std::string_view(m_state->path), 0, 0};
+        fi.module = module;
+        fi.makeTarget = def.name;
+        fi.type = Type::unknown();
+        m_state->symbols.push_back(std::move(fi));
+    }
+
+    // Static block functions are callable as RecordName.FuncName(...)
+    if (def.staticBlock) {
+        for (const auto& fn : def.staticBlock->functions) {
+            SymbolInfo si;
+            si.name = fn->name;
+            si.kind = SymbolKind::Function;
+            si.definition = fn->location;
+            si.module = module;
+            si.makeTarget = def.name;
+            si.isFoul = fn->isFoul;
+            si.type = Type::unknown();
+            m_state->symbols.push_back(std::move(si));
+        }
+    }
+}
+
+static auto makeTargetName(const ast::TypeExprPtr& te) -> std::string {
+    if (!te) return "";
+    return std::visit([](const auto& k) -> std::string {
+        using T = std::decay_t<decltype(k)>;
+        if constexpr (std::is_same_v<T, ast::TypeName>)
+            return k.parts.empty() ? "" : k.parts[0];
+        if constexpr (std::is_same_v<T, ast::GenericType>)
+            return k.name.parts.empty() ? "" : k.name.parts[0];
+        // List literal syntax [X] → "List", map {K:V} would need MapType
+        if constexpr (std::is_same_v<T, ast::ListType>)
+            return "List";
+        return "";
+    }, te->kind);
 }
 
 auto CollectPass::collectMake(const ast::MakeDef& def, const std::string& module) -> void {
-    // Register functions defined inside make blocks
+    std::string target = makeTargetName(def.target);
+
+    auto tagTarget = [&](const std::string& funcName) {
+        if (target.empty()) return;
+        for (auto& sym : m_state->symbols) {
+            if (sym.name == funcName && sym.module == module && sym.makeTarget.empty())
+                sym.makeTarget = target;
+        }
+    };
+
+    // Index a TypeAnnotation from a make block as an instance method of `target`.
+    auto collectMakeAnnotation = [&](const ast::TypeAnnotation& ann) {
+        for (const auto& sym : m_state->symbols) {
+            if (sym.name == ann.name && sym.makeTarget == target) return; // dedup
+        }
+        SymbolInfo info;
+        info.name = ann.name;
+        info.kind = SymbolKind::Function;
+        info.definition = SourceLocation{std::string_view(m_state->path), 0, 0};
+        info.module = module;
+        info.isFoul = ann.isFoul;
+        info.makeTarget = target;
+        info.type = Type::unknown();
+        m_state->symbols.push_back(std::move(info));
+    };
+
     for (const auto& item : def.body) {
-        std::visit([this, &module](const auto& ptr) {
+        std::visit([&](const auto& ptr) {
             using T = std::decay_t<decltype(*ptr)>;
             if constexpr (std::is_same_v<T, ast::FunctionDef>) {
                 collectFunction(*ptr, module);
+                tagTarget(ptr->name);
+            } else if constexpr (std::is_same_v<T, ast::TypeAnnotation>) {
+                collectMakeAnnotation(*ptr);
             } else if constexpr (std::is_same_v<T, ast::VisibilityBlock>) {
                 for (const auto& vitem : ptr->items) {
-                    std::visit([this, &module](const auto& vptr) {
+                    std::visit([&](const auto& vptr) {
                         using VT = std::decay_t<decltype(*vptr)>;
                         if constexpr (std::is_same_v<VT, ast::FunctionDef>) {
                             collectFunction(*vptr, module);
+                            tagTarget(vptr->name);
+                        } else if constexpr (std::is_same_v<VT, ast::TypeAnnotation>) {
+                            collectMakeAnnotation(*vptr);
                         }
                     }, vitem);
                 }

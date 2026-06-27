@@ -22,6 +22,7 @@ struct SymbolInfo {
     bool isExported = true;
     std::vector<std::pair<std::string, TypePtr>> params;
     int clauseCount = 1;
+    std::string makeTarget; // set for functions inside a `make TypeName do` block
 };
 
 struct FileState {
@@ -57,6 +58,10 @@ public:
     // Used for go-to-definition and hover. Returns null if nothing found there.
     auto symbolAt(const std::string& file,
                   uint32_t line, uint32_t col) const -> const SymbolInfo*;
+
+    // Returns all known symbol names (across all indexed files) whose name
+    // starts with `prefix`. Used for REPL tab completion.
+    auto completionsFor(const std::string& prefix) const -> std::vector<std::string>;
 
     // Access to raw file state for passes
     auto fileState(const std::string& path) -> FileState*;

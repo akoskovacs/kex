@@ -16,6 +16,121 @@
 #ifdef HAS_READLINE
 #include <readline/readline.h>
 #include <readline/history.h>
+#include "common/completion.hxx"
+
+// Completion state — populated before the REPL loop, read by the C callback.
+static kex::semantic::SemanticDB* g_replDb = nullptr;
+// Set to the type name while the user is typing inside a `make X do` block,
+// so the completer can infer parameter types from pattern signatures.
+static std::string g_currentMakeTarget;
+static std::vector<std::string> g_completionMatches;
+static std::string g_completionWord;
+static std::string g_completionStripPrefix;
+static std::string g_completionRewriteTo;
+
+extern "C" {
+// Display hook: strip the shared "Qualifier." prefix from every entry so the
+// list shows just member names like `map` instead of `[123,1,123,123].map`.
+static void kexDisplayMatches(char** matches, int num_matches, int /*max_length*/) {
+    // matches[0] is readline's longest-common-prefix; find the last '.' in it
+    // to determine how many characters to strip from every completion.
+    size_t stripLen = 0;
+    if (matches[0]) {
+        std::string common(matches[0]);
+        auto dot = common.rfind('.');
+        if (dot != std::string::npos) stripLen = dot + 1;
+    }
+
+    if (stripLen == 0) {
+        // No dot — let readline display normally via its own list formatter.
+        rl_display_match_list(matches, num_matches, 0);
+        rl_on_new_line();
+        return;
+    }
+
+    // Build a temporary array of stripped names and call rl_display_match_list.
+    std::vector<char*> stripped(num_matches + 2);
+    stripped[0] = strdup(matches[0] + stripLen); // stripped common prefix
+    int newMax = 0;
+    for (int i = 1; i <= num_matches; i++) {
+        const char* src = matches[i];
+        size_t srcLen = std::strlen(src);
+        const char* member = (srcLen > stripLen) ? src + stripLen : src;
+        stripped[i] = strdup(member);
+        int len = static_cast<int>(std::strlen(stripped[i]));
+        if (len > newMax) newMax = len;
+    }
+    stripped[num_matches + 1] = nullptr;
+
+    rl_display_match_list(stripped.data(), num_matches, newMax);
+
+    for (int i = 0; i <= num_matches; i++) free(stripped[i]);
+    rl_on_new_line();
+}
+
+static char* kexCompletionEntry(const char* /*text*/, int state) {
+    if (state == 0) {
+        g_completionMatches.clear();
+        if (g_replDb) {
+            auto raw = g_replDb->completionsFor(g_completionWord);
+            g_completionMatches = kex::rewriteCompletions(std::move(raw),
+                                                          g_completionStripPrefix,
+                                                          g_completionRewriteTo);
+        }
+    }
+    if (state < static_cast<int>(g_completionMatches.size()))
+        return strdup(g_completionMatches[state].c_str());
+    return nullptr;
+}
+static char** kexCompletion(const char* text, int start, int end) {
+    rl_attempted_completion_over = 1;
+    rl_completion_suppress_append = 1; // no trailing space/quote after completion
+    auto cq = kex::resolveCompletionQuery(rl_line_buffer, start, text);
+
+    // If the DB query still has an unresolved lowercase qualifier (e.g. "x.")
+    // and we're inside a `make X` block, try to resolve it via parameter
+    // pattern inference (handles `@[x|xs]` head/tail and simple named params).
+    if (!g_currentMakeTarget.empty()) {
+        auto dotPos = cq.dbQuery.rfind('.');
+        if (dotPos != std::string::npos) {
+            std::string qualifier = cq.dbQuery.substr(0, dotPos);
+            bool looksUnresolved = !qualifier.empty()
+                && std::islower((unsigned char)qualifier[0])
+                && std::all_of(qualifier.begin(), qualifier.end(),
+                       [](char c){ return std::isalnum((unsigned char)c) || c == '_'; });
+            if (looksUnresolved) {
+                std::string inferred = kex::inferPatternParamType(
+                    rl_line_buffer, qualifier, g_currentMakeTarget);
+                if (!inferred.empty()) {
+                    std::string memberPart = cq.dbQuery.substr(dotPos + 1);
+                    cq.dbQuery      = inferred + "." + memberPart;
+                    cq.rewriteFrom  = inferred + ".";
+                    // cq.rewriteTo keeps the original "x." so readline inserts correctly
+                }
+            }
+        }
+    }
+
+    g_completionWord        = cq.dbQuery;
+    g_completionStripPrefix = cq.rewriteFrom;
+    g_completionRewriteTo   = cq.rewriteTo;
+
+    static bool debugCompl = (std::getenv("KEX_DEBUG_COMPLETE") != nullptr);
+    if (debugCompl) {
+        fprintf(stderr, "\n[complete] linebuf=%s start=%d end=%d text=%s"
+                        " -> query=%s rewriteFrom=%s rewriteTo=%s\n",
+                rl_line_buffer, start, end, text,
+                cq.dbQuery.c_str(), cq.rewriteFrom.c_str(), cq.rewriteTo.c_str());
+        auto preview = g_replDb ? g_replDb->completionsFor(cq.dbQuery)
+                                : std::vector<std::string>{};
+        auto rewritten = kex::rewriteCompletions(preview, cq.rewriteFrom, cq.rewriteTo);
+        for (const auto& c : rewritten)
+            fprintf(stderr, "  [match] %s\n", c.c_str());
+    }
+
+    return rl_completion_matches(text, kexCompletionEntry);
+}
+} // extern "C"
 #endif
 
 auto readLine(const std::string& prompt) -> std::pair<std::string, bool> {
@@ -316,18 +431,19 @@ auto printVersion() -> void {
 
 int main(int argc, char* argv[]) {
     static struct option longOptions[] = {
-        {"run",      no_argument, nullptr, 'r'},
-        {"no-check", no_argument, nullptr, 'n'},
-        {"lex",      no_argument, nullptr, 'l'},
-        {"parse",    no_argument, nullptr, 'p'},
-        {"check",    no_argument, nullptr, 'c'},
-        {"json",     no_argument, nullptr, 'j'},
-        {"summary",  no_argument, nullptr, 's'},
-        {"types",    no_argument, nullptr, 't'},
-        {"help",     no_argument, nullptr, 'h'},
-        {"version",  no_argument, nullptr, 'v'},
-        {"no-colors",no_argument, nullptr, 'N'},
-        {nullptr,    0,           nullptr,  0 }
+        {"run",      no_argument,       nullptr, 'r'},
+        {"no-check", no_argument,       nullptr, 'n'},
+        {"lex",      no_argument,       nullptr, 'l'},
+        {"parse",    no_argument,       nullptr, 'p'},
+        {"check",    no_argument,       nullptr, 'c'},
+        {"json",     no_argument,       nullptr, 'j'},
+        {"summary",  no_argument,       nullptr, 's'},
+        {"types",    no_argument,       nullptr, 't'},
+        {"complete", required_argument, nullptr, 'C'},
+        {"help",     no_argument,       nullptr, 'h'},
+        {"version",  no_argument,       nullptr, 'v'},
+        {"no-colors",no_argument,       nullptr, 'N'},
+        {nullptr,    0,                 nullptr,  0 }
     };
 
     std::string mode = "run";
@@ -335,9 +451,10 @@ int main(int argc, char* argv[]) {
     bool dumpTypes = false;
     bool jsonOutput = false;
     bool summaryMode = false;
+    std::string completePrefix;
     int opt;
 
-    while ((opt = getopt_long(argc, argv, "rnlcjspthv", longOptions, nullptr)) != -1) {
+    while ((opt = getopt_long(argc, argv, "rnlcjspthvC:", longOptions, nullptr)) != -1) {
         switch (opt) {
             case 'r': mode = "run"; break;
             case 'n': skipCheck = true; break;
@@ -347,11 +464,28 @@ int main(int argc, char* argv[]) {
             case 'j': jsonOutput = true; mode = "check"; break;
             case 's': summaryMode = true; mode = "check"; break;
             case 't': dumpTypes = true; break;
+            case 'C': completePrefix = optarg; mode = "complete"; break;
             case 'h': printUsage(argv[0]); return 0;
             case 'v': printVersion(); return 0;
             case 'N': kex::color::enabled = false; break;
             default: printUsage(argv[0]); return 1;
         }
+    }
+
+    if (mode == "complete") {
+        kex::semantic::SemanticDB db;
+        loadPrelude(db);
+        if (optind < argc)
+            db.updateFile(argv[optind], readFile(argv[optind]));
+        // Simulate readline not splitting: start=0, text=completePrefix
+        auto cq  = kex::resolveCompletionQuery(completePrefix.c_str(), 0,
+                                               completePrefix.c_str());
+        auto raw = db.completionsFor(cq.dbQuery);
+        auto completions = kex::rewriteCompletions(std::move(raw),
+                                                   cq.rewriteFrom, cq.rewriteTo);
+        for (const auto& c : completions)
+            std::cout << c << "\n";
+        return 0;
     }
 
     if (optind >= argc && mode != "repl") {
@@ -374,9 +508,28 @@ int main(int argc, char* argv[]) {
         }
 #endif
 
+        // SemanticDB for REPL: prelude loaded once, updated on each input.
+        kex::semantic::SemanticDB replDb;
+        loadPrelude(replDb);
+#ifdef HAS_READLINE
+        g_replDb = &replDb;
+        rl_attempted_completion_function    = kexCompletion;
+        rl_completion_display_matches_hook  = kexDisplayMatches;
+        // Exclude '.' so "IO.pr<TAB>" is one token; exclude '"' so readline
+        // never treats string literals as quoted words (which would cause it to
+        // call a NULL dequoting function → segfault and add a stray close-quote).
+        rl_completer_word_break_characters = (char*)" \t\n\\@$><=;|&{(";
+        // No quote characters: our completions can contain '"' and we don't want
+        // readline's quoting machinery to touch them.
+        rl_completer_quote_characters = (char*)"";
+#endif
+
         kex::interpreter::Evaluator evaluator;
         evaluator.setReplMode(true);
         std::string line;
+        // Accumulated source of all top-level definitions typed in the REPL so
+        // far, used to keep the SemanticDB index complete across multiple inputs.
+        std::string replAccumSource;
         // Keep parsed programs alive so function closures can reference AST nodes
         std::vector<kex::ast::Program*> replPrograms;
         // A line read ahead while chaining function clauses that turned out
@@ -411,6 +564,7 @@ int main(int argc, char* argv[]) {
                       << "    :help         Show this help\n"
                       << "    :set <opt>    Enable a feature\n"
                       << "    :unset <opt>  Disable a feature\n"
+                      << "    :complete <p> Show completions for prefix p\n"
                       << "\n"
                       << "  Options for :set / :unset:\n"
                       << "    types         Show type of each result\n"
@@ -471,11 +625,31 @@ int main(int argc, char* argv[]) {
                 handleSet(line.substr(7), false);
                 continue;
             }
+            if (line.substr(0, 10) == ":complete ") {
+                auto prefix = line.substr(10);
+                auto results = replDb.completionsFor(prefix);
+                if (results.empty()) {
+                    std::cout << "  (no completions for \"" << prefix << "\")\n";
+                } else {
+                    for (const auto& c : results)
+                        std::cout << "  " << c << "\n";
+                }
+                continue;
+            }
             // If it starts with : but isn't a known command, treat as atom expression
             // (known commands already handled above)
 
             // Multi-line: accumulate if there are unmatched do/end blocks
             std::string source = line;
+
+            // Returns true if `s` starts with `make <TypeName>` but has no
+            // `do` keyword on the same line (implicit-do block opener).
+            auto isMakeWithoutDo = [](const std::string& s) -> bool {
+                if (s.rfind("make ", 0) != 0) return false;
+                // Check that the rest is a type name (no explicit `do`)
+                auto doPos = s.find(" do");
+                return doPos == std::string::npos;
+            };
 
             auto countBlocks = [](const std::string& s) -> int {
                 int count = 0;
@@ -494,7 +668,17 @@ int main(int argc, char* argv[]) {
                 return count;
             };
 
-            int doCount = countBlocks(source);
+            // `make TypeName` (no explicit `do`) implicitly opens a block.
+            bool implicitDo = isMakeWithoutDo(source);
+            int doCount = implicitDo ? 1 : countBlocks(source);
+
+            // Track which make block we're inside so the completer can infer
+            // parameter types from `@[x|xs]` patterns, etc.
+            if (doCount > 0 && source.rfind("make ", 0) == 0) {
+                std::string rest = source.substr(5);
+                auto sp = rest.find_first_of(" \n\t");
+                g_currentMakeTarget = (sp != std::string::npos) ? rest.substr(0, sp) : rest;
+            }
             while (doCount > 0) {
                 auto [contLine, contOk] = readLine("...> ");
                 if (!contOk) break;
@@ -586,6 +770,15 @@ int main(int argc, char* argv[]) {
 
             try {
                 if (isFuncDef) {
+                    // If the user wrote `make TypeName` without `do`, insert it
+                    // before parsing so the grammar's `expect(Do)` is satisfied.
+                    if (implicitDo) {
+                        auto nl = source.find('\n');
+                        if (nl != std::string::npos)
+                            source.insert(nl, " do");
+                        else
+                            source += " do";
+                    }
                     // Parse as top-level definition
                     kex::Lexer lexer(source);
                     auto tokens = lexer.tokenizeAll();
@@ -593,6 +786,11 @@ int main(int argc, char* argv[]) {
                     auto* program = new kex::ast::Program(parser.parseProgram());
                     replPrograms.push_back(program);
                     execProgram(program);
+                    // Accumulate and re-index so all prior definitions stay
+                    // visible for tab completion, not just the latest one.
+                    replAccumSource += source + "\n";
+                    replDb.updateFile("<repl>", replAccumSource);
+                    g_currentMakeTarget.clear(); // block is complete
                 } else {
                     // Wrap in main for expression evaluation
                     auto wrapped = "main do\n" + source + "\nend\n";

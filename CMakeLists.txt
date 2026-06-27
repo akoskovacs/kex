@@ -128,6 +128,11 @@ target_link_libraries(examples_test PRIVATE kex_lib)
 target_include_directories(examples_test PRIVATE tests)
 add_test(NAME examples_test COMMAND examples_test WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
+add_executable(completion_test tests/completion_test.cxx)
+target_link_libraries(completion_test PRIVATE kex_lib)
+target_include_directories(completion_test PRIVATE tests)
+add_test(NAME completion_test COMMAND completion_test WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+
 add_executable(repl_test tests/repl_test.cxx)
 target_link_libraries(repl_test PRIVATE kex_lib)
 target_include_directories(repl_test PRIVATE tests)
