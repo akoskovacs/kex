@@ -13,26 +13,8 @@ namespace kex::codegen {
 
 auto CoreErlangEmitter::erlAtom(const std::string& s) -> std::string {
     if (s.empty()) return "''";
-    // Needs quoting if it starts with uppercase, contains special chars, or
-    // is an Erlang reserved word.
-    bool needsQuote = !std::islower(static_cast<unsigned char>(s[0])) && s[0] != '_';
-    if (!needsQuote) {
-        for (char c : s) {
-            if (!std::isalnum(static_cast<unsigned char>(c)) && c != '_' && c != '@') {
-                needsQuote = true;
-                break;
-            }
-        }
-    }
-    static const std::vector<std::string> reserved = {
-        "after","begin","case","catch","cond","end","fun","if","let",
-        "of","query","receive","try","when","module","attributes",
-        "apply","call","do","in","letrec","primop"
-    };
-    if (!needsQuote)
-        needsQuote = std::find(reserved.begin(), reserved.end(), s) != reserved.end();
-    if (needsQuote) return "'" + s + "'";
-    return s;
+    // Core Erlang requires ALL atoms to be single-quoted.
+    return "'" + s + "'";
 }
 
 auto CoreErlangEmitter::erlVar(const std::string& s) -> std::string {
@@ -80,7 +62,15 @@ auto CoreErlangEmitter::emitInterpolatedString(const std::string& raw) -> std::s
         }
         if (dollar > pos)
             parts.push_back(erlString(raw.substr(pos, dollar - pos)));
-        auto close = raw.find('}', dollar + 2);
+        // Find the matching '}', respecting nested braces.
+        size_t close = std::string::npos;
+        {
+            int depth = 1;
+            for (size_t k = dollar + 2; k < raw.size(); k++) {
+                if (raw[k] == '{') depth++;
+                else if (raw[k] == '}') { if (--depth == 0) { close = k; break; } }
+            }
+        }
         if (close == std::string::npos) break; // malformed — treat as literal
         std::string inner = raw.substr(dollar + 2, close - dollar - 2);
         // Parse the inner expression and emit it, wrapped in to_string.
@@ -281,14 +271,10 @@ auto CoreErlangEmitter::emitExpr(const ast::ExprPtr& expr) -> std::string {
                     default:                     return "+";
                 }
             }();
-            // Special case: string concatenation (charlists use ++)
-            if (node.op == TokenType::Plus) {
-                // We can't know statically if it's a string; emit as ++
-                // for now and let the runtime handle it (kex_runtime will
-                // dispatch). For arithmetic, the caller should annotate.
-                // For M1, use erlang:'+' and rely on type info later.
-                return "call 'erlang':'" + op + "'(" + l + ", " + r + ")";
-            }
+            // + is overloaded: string concat (++) or arithmetic (+).
+            // Dispatch at runtime via kex_io:add/2 which checks is_list.
+            if (node.op == TokenType::Plus)
+                return "call 'kex_io':'add'(" + l + ", " + r + ")";
             return "call 'erlang':'" + op + "'(" + l + ", " + r + ")";
         }
 
@@ -499,6 +485,21 @@ auto CoreErlangEmitter::emitExpr(const ast::ExprPtr& expr) -> std::string {
                 }
             }
 
+            // Type conversion: x.to(String), x.to(Int), x.to(Float)
+            if (node.method == "to" && node.args.size() == 1) {
+                std::string typeName;
+                if (auto* ui = std::get_if<ast::UpperIdentifier>(&node.args[0]->kind))
+                    typeName = ui->name;
+                else if (auto* ve = std::get_if<ast::VarExpr>(&node.args[0]->kind))
+                    typeName = ve->name;
+                if (typeName == "String")
+                    return "call 'kex_io':'to_string'(" + recv + ")";
+                if (typeName == "Int")
+                    return "call 'erlang':'round'(" + recv + ")";
+                if (typeName == "Float")
+                    return "call 'erlang':'float'(" + recv + ")";
+            }
+
             // Option methods
             if (node.method == "or" && node.args.size() == 1) {
                 // Some(x).or(default) → x; None.or(default) → default
@@ -555,6 +556,66 @@ auto CoreErlangEmitter::emitExpr(const ast::ExprPtr& expr) -> std::string {
             };
             if (node.method == "second" && node.args.empty()) return nthOrElement(2);
             if (node.method == "third"  && node.args.empty()) return nthOrElement(3);
+
+            // Predicate combinators (any?, all?, none?, find, reject)
+            if (node.method == "any?" || node.method == "none?") {
+                auto [fnVar, letExpr] = bindFun(rawBlock());
+                auto matched = "call 'lists':'any'(" + fnVar + ", " + recv + ")";
+                if (node.method == "none?")
+                    matched = "call 'erlang':'not'(" + matched + ")";
+                return letExpr + matched;
+            }
+            if (node.method == "all?") {
+                auto [fnVar, letExpr] = bindFun(rawBlock());
+                return letExpr + "call 'lists':'all'(" + fnVar + ", " + recv + ")";
+            }
+            if (node.method == "reject") {
+                auto [fnVar, letExpr] = bindFun(rawBlock());
+                auto negVar = freshVar("Neg");
+                // Core Erlang funs have no 'end'; apply VarName(Args) calls a fun variable.
+                return letExpr +
+                       "let <" + negVar + "> = fun (_NX) -> call 'erlang':'not'(apply " + fnVar + "(_NX)) in\n"
+                       "call 'lists':'filter'(" + negVar + ", " + recv + ")";
+            }
+            if (node.method == "find") {
+                auto [fnVar, letExpr] = bindFun(rawBlock());
+                auto tmp = freshVar("Found");
+                return letExpr +
+                       "case call 'lists':'search'(" + fnVar + ", " + recv + ") of\n"
+                       "  {'value', " + tmp + "} when 'true' -> {'" + "Just', " + tmp + "}\n"
+                       "  'false' when 'true' -> 'none'\n"
+                       "end";
+            }
+            // Map methods: put, delete, get, merge, mapKeys, mapValues, keys, values
+            if (node.method == "put" && node.args.size() == 2)
+                return "call 'maps':'put'(" + emitExpr(node.args[0]) + ", " + emitExpr(node.args[1]) + ", " + recv + ")";
+            if (node.method == "delete" && node.args.size() == 1)
+                return "call 'maps':'remove'(" + firstArg() + ", " + recv + ")";
+            if (node.method == "get" && node.args.size() == 1)
+                return "call 'maps':'get'(" + firstArg() + ", " + recv + ")";
+            if (node.method == "get" && node.args.size() == 2)
+                return "call 'maps':'get'(" + emitExpr(node.args[0]) + ", " + recv + ", " + emitExpr(node.args[1]) + ")";
+            if (node.method == "merge" && node.args.size() == 1)
+                return "call 'maps':'merge'(" + recv + ", " + firstArg() + ")";
+            if (node.method == "has?" && node.args.size() == 1)
+                return "call 'maps':'is_key'(" + firstArg() + ", " + recv + ")";
+            if (node.method == "keys" && node.args.empty())
+                return "call 'maps':'keys'(" + recv + ")";
+            if (node.method == "values" && node.args.empty())
+                return "call 'maps':'values'(" + recv + ")";
+            if (node.method == "mapKeys") {
+                auto [fnVar, letExpr] = bindFun(rawBlock());
+                // maps:fold to rebuild with transformed keys
+                auto accVar = freshVar("MA"); auto kVar = freshVar("K"); auto vVar = freshVar("V");
+                return letExpr +
+                       "call 'maps':'fold'(fun(" + kVar + ", " + vVar + ", " + accVar + ") -> "
+                       "call 'maps':'put'(apply " + fnVar + "(" + kVar + "), " + vVar + ", " + accVar + ") end, "
+                       "#{}, " + recv + ")";
+            }
+            if (node.method == "mapValues") {
+                auto [fnVar, letExpr] = bindFun(rawBlock());
+                return letExpr + "call 'maps':'map'(" + fnVar + ", " + recv + ")";
+            }
 
             // Fallback: unknown method — emit as local apply
             std::string args = recv;
@@ -738,6 +799,43 @@ auto CoreErlangEmitter::emitBody(const std::vector<ast::ExprPtr>& body) -> std::
         } else if (auto* ae = std::get_if<ast::AssignExpr>(&e->kind)) {
             bindVar = erlVar(ae->name);
             bindVal = emitExpr(ae->value);
+        } else if (auto* re = std::get_if<ast::ReturnExpr>(&e->kind)) {
+            // `return X if cond` parses as ReturnExpr{value=TrailingIf{X, cond}}.
+            // Fold the remaining body into the false branch.
+            if (auto* ti = std::get_if<ast::TrailingIf>(&re->value->kind)) {
+                result = "case " + emitExpr(ti->condition) + " of\n"
+                         "  'true' when 'true' ->\n    " + emitExpr(ti->expr) + "\n"
+                         "  'false' when 'true' ->\n    " + result + "\n"
+                         "end";
+                continue;
+            }
+            // Also handle ReturnExpr{value=IfExpr{no else}} — `return (if cond do X end)`
+            if (auto* ie = std::get_if<ast::IfExpr>(&re->value->kind)) {
+                if (!ie->elseBody && ie->elifs.empty()) {
+                    result = "case " + emitExpr(ie->condition) + " of\n"
+                             "  'true' when 'true' ->\n    " + emitBody(ie->thenBody) + "\n"
+                             "  'false' when 'true' ->\n    " + result + "\n"
+                             "end";
+                    continue;
+                }
+            }
+            // Unconditional early return: discard unreachable tail.
+            result = emitExpr(re->value);
+            continue;
+        } else if (auto* ie = std::get_if<ast::IfExpr>(&e->kind)) {
+            // `if cond do return X end` — then-body ends with ReturnExpr, no else.
+            bool thenEndsWithReturn = !ie->thenBody.empty() &&
+                std::get_if<ast::ReturnExpr>(&ie->thenBody.back()->kind);
+            bool noElse = !ie->elseBody && ie->elifs.empty();
+            if (thenEndsWithReturn && noElse) {
+                result = "case " + emitExpr(ie->condition) + " of\n"
+                         "  'true' when 'true' ->\n    " + emitBody(ie->thenBody) + "\n"
+                         "  'false' when 'true' ->\n    " + result + "\n"
+                         "end";
+                continue;
+            }
+            bindVar = freshVar("S");
+            bindVal = emitExpr(e);
         } else {
             bindVar = freshVar("S");
             bindVal = emitExpr(e);
@@ -1069,20 +1167,28 @@ auto CoreErlangEmitter::emitProgram(const ast::Program& prog,
                 }
             } else if constexpr (std::is_same_v<T, std::unique_ptr<ast::MakeDef>>) {
                 if (node) {
+                    // Collect FunctionDefs from body, including inside VisibilityBlocks.
+                    std::function<void(const ast::FunctionDef&)> registerFn =
+                        [&](const ast::FunctionDef& fd) {
+                        int explArity = fd.clauses.empty() ? 0
+                                      : static_cast<int>(fd.clauses[0].params.size());
+                        bool firstIsReceiver = false;
+                        if (!fd.clauses.empty() && !fd.clauses[0].params.empty()) {
+                            const auto& p0 = fd.clauses[0].params[0];
+                            if (!p0.name && p0.pattern &&
+                                std::holds_alternative<ast::RecordPattern>((*p0.pattern)->kind))
+                                firstIsReceiver = true;
+                        }
+                        m_topLevelFns[fd.name] = explArity + (firstIsReceiver ? 0 : 1);
+                    };
                     for (const auto& bodyItem : node->body) {
-                        if (auto* fd = std::get_if<std::unique_ptr<ast::FunctionDef>>(&bodyItem)) {
-                            if (*fd) {
-                                int explArity = (*fd)->clauses.empty() ? 0
-                                              : static_cast<int>((*fd)->clauses[0].params.size());
-                                bool firstIsReceiver = false;
-                                if (!(*fd)->clauses.empty() && !(*fd)->clauses[0].params.empty()) {
-                                    const auto& p0 = (*fd)->clauses[0].params[0];
-                                    if (!p0.name && p0.pattern &&
-                                        std::holds_alternative<ast::RecordPattern>((*p0.pattern)->kind))
-                                        firstIsReceiver = true;
-                                }
-                                int arity = explArity + (firstIsReceiver ? 0 : 1);
-                                m_topLevelFns[(*fd)->name] = arity;
+                        if (auto* fdp = std::get_if<std::unique_ptr<ast::FunctionDef>>(&bodyItem)) {
+                            if (*fdp) registerFn(**fdp);
+                        } else if (auto* vbp = std::get_if<std::unique_ptr<ast::VisibilityBlock>>(&bodyItem)) {
+                            if (*vbp) {
+                                for (const auto& vi : (*vbp)->items)
+                                    if (auto* fp = std::get_if<std::unique_ptr<ast::FunctionDef>>(&vi))
+                                        if (*fp) registerFn(**fp);
                             }
                         }
                     }
@@ -1119,26 +1225,32 @@ auto CoreErlangEmitter::emitProgram(const ast::Program& prog,
             } else if constexpr (std::is_same_v<T, std::unique_ptr<ast::MakeDef>>) {
                 // make T do ... end — emit each FunctionDef as a top-level function.
                 if (!node) return;
+                // Helper to push one FunctionDef (from either direct body or VisibilityBlock).
+                auto pushMakeFn = [&](const ast::FunctionDef* fd) {
+                    if (!fd) return;
+                    bool firstParamIsReceiver = false;
+                    if (!fd->clauses.empty() && !fd->clauses[0].params.empty()) {
+                        const auto& p0 = fd->clauses[0].params[0];
+                        if (!p0.name && p0.pattern &&
+                            std::holds_alternative<ast::RecordPattern>((*p0.pattern)->kind))
+                            firstParamIsReceiver = true;
+                    }
+                    bool needsImplicitThis = !firstParamIsReceiver;
+                    if (!ordered.empty() && !ordered.back().isMain
+                        && ordered.back().fns[0]->name == fd->name) {
+                        ordered.back().fns.push_back(fd);
+                    } else {
+                        ordered.push_back({false, needsImplicitThis, {fd}, nullptr});
+                    }
+                };
                 for (const auto& bodyItem : node->body) {
                     if (auto* fdPtr = std::get_if<std::unique_ptr<ast::FunctionDef>>(&bodyItem)) {
-                        const auto& fd = *fdPtr;
-                        if (!fd) continue;
-                        // Determine if this method has an implicit `this` receiver:
-                        // If the first param is a RecordPattern, it IS the receiver.
-                        // Otherwise, `this` is implicit and prepended as _Arg0.
-                        bool firstParamIsReceiver = false;
-                        if (!fd->clauses.empty() && !fd->clauses[0].params.empty()) {
-                            const auto& p0 = fd->clauses[0].params[0];
-                            if (!p0.name && p0.pattern &&
-                                std::holds_alternative<ast::RecordPattern>((*p0.pattern)->kind))
-                                firstParamIsReceiver = true;
-                        }
-                        bool needsImplicitThis = !firstParamIsReceiver;
-                        if (!ordered.empty() && !ordered.back().isMain
-                            && ordered.back().fns[0]->name == fd->name) {
-                            ordered.back().fns.push_back(fd.get());
-                        } else {
-                            ordered.push_back({false, needsImplicitThis, {fd.get()}, nullptr});
+                        pushMakeFn(fdPtr->get());
+                    } else if (auto* vbPtr = std::get_if<std::unique_ptr<ast::VisibilityBlock>>(&bodyItem)) {
+                        if (*vbPtr) {
+                            for (const auto& vi : (*vbPtr)->items)
+                                if (auto* fp = std::get_if<std::unique_ptr<ast::FunctionDef>>(&vi))
+                                    pushMakeFn(fp->get());
                         }
                     }
                 }

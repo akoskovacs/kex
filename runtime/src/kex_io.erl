@@ -1,5 +1,5 @@
 -module(kex_io).
--export([print_line/1, print/1, print_error/1, read_line/0, inspect/1, to_string/1]).
+-export([print_line/1, print/1, print_error/1, read_line/0, inspect/1, to_string/1, add/2]).
 
 %% IO.printLine(x) — print x followed by a newline to stdout.
 print_line(X) ->
@@ -72,10 +72,18 @@ inspect(X) ->
     io:format(?GRAY ++ "=> " ++ ?RESET ++ "~p~n", [X]), X.
 
 %% Internal: convert any Kex value to a printable charlist.
-to_string(X) when is_list(X)    -> X;
+to_string(X) when is_list(X) ->
+    case io_lib:printable_unicode_list(X) of
+        true  -> X;
+        false -> lists:flatten(io_lib:format("~w", [X]))
+    end;
 to_string(X) when is_binary(X)  -> binary_to_list(X);
 to_string(X) when is_atom(X)    -> atom_to_list(X);
 to_string(X) when is_integer(X) -> integer_to_list(X);
-to_string(X) when is_float(X)   -> io_lib:format("~g", [X]);
-to_string(X) when is_tuple(X)   -> io_lib:format("~p", [X]);
-to_string(X)                    -> io_lib:format("~p", [X]).
+to_string(X) when is_float(X)   -> lists:flatten(io_lib:format("~g", [X]));
+to_string(X) when is_tuple(X)   -> lists:flatten(io_lib:format("~p", [X]));
+to_string(X)                    -> lists:flatten(io_lib:format("~p", [X])).
+
+%% add/2 — polymorphic + for both strings (lists) and numbers.
+add(A, B) when is_list(A) -> A ++ B;
+add(A, B) -> A + B.
