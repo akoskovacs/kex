@@ -17,13 +17,15 @@ auto Evaluator::registerStringBuiltins() -> void {
     // keeps working either way.
     reg("at", [](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.size() < 2) return Value::none();
-        auto* str = std::get_if<StringValue>(&args[0]->data);
         auto* idx = std::get_if<IntValue>(&args[1]->data);
-        if (!str || !idx) return Value::none();
-        if (idx->value < 0 || static_cast<size_t>(idx->value) >= str->value.size()) {
-            return Value::none();
+        if (!idx || idx->value < 0) return Value::none();
+        auto i = static_cast<size_t>(idx->value);
+        if (auto* list = std::get_if<ListValue>(&args[0]->data)) {
+            return i < list->elements.size() ? list->elements[i] : Value::none();
         }
-        return Value::character(str->value[static_cast<size_t>(idx->value)]);
+        auto* str = std::get_if<StringValue>(&args[0]->data);
+        if (!str) return Value::none();
+        return i < str->value.size() ? Value::character(str->value[i]) : Value::none();
     });
 
     // c.digit? -> Bool — true for '0'..'9'. UFCS-callable on a Char.

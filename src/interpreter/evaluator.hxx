@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace kex::interpreter {
@@ -90,6 +91,8 @@ private:
     auto registerAdtConstructors() -> void;
     auto registerIOBuiltins() -> void;
     auto registerFileBuiltins() -> void;
+    auto registerDirectoryBuiltins() -> void;
+    auto registerMockBuiltins() -> void;
     auto registerListBuiltins() -> void;
     auto registerStringBuiltins() -> void;
     auto registerIntegerBuiltins() -> void;
@@ -119,6 +122,8 @@ private:
     std::unordered_map<std::string, const ast::RecordDef*> m_recordDefs;
     std::vector<std::string> m_scriptArgs;
     bool m_replMode = false;
+    std::unordered_map<std::string, std::string> m_mockFiles;
+    std::unordered_set<std::string> m_mockDirs;
 
     // describe/it/assert (registerTestBuiltins) — nesting depth for
     // indentation, and pass/fail counters for the summary line printed

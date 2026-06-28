@@ -660,6 +660,8 @@ auto Evaluator::eval(const ast::Expr& expr) -> ValuePtr {
                 receiverType = "List";
             } else if (std::holds_alternative<MapValue>(receiver->data)) {
                 receiverType = "Map";
+            } else if (std::holds_alternative<FileHandleValue>(receiver->data)) {
+                receiverType = "FileHandle";
             } else if (std::holds_alternative<IntValue>(receiver->data) ||
                        std::holds_alternative<BigIntValue>(receiver->data)) {
                 receiverType = "Integer";
@@ -1588,6 +1590,8 @@ auto Evaluator::registerBuiltins() -> void {
     registerAdtConstructors();
     registerIOBuiltins();
     registerFileBuiltins();
+    registerDirectoryBuiltins();
+    registerMockBuiltins();
     registerListBuiltins();
     registerStringBuiltins();
     registerIntegerBuiltins();

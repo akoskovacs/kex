@@ -637,8 +637,8 @@ int main() {
             std::filesystem::remove(path);
             auto result = run(
                 "main do\n"
-                "  IO.write(\"" + path + "\", \"hello\")\n"
-                "  IO.read(\"" + path + "\")\n"
+                "  File.write(\"" + path + "\", \"hello\")\n"
+                "  File.read(\"" + path + "\")\n"
                 "end\n"
             );
             assertEqual(std::get<StringValue>(result->data).value, std::string("hello"));
@@ -651,7 +651,7 @@ int main() {
             auto before = run("main do\n  File.exists?(\"" + path + "\")\nend\n");
             assertFalse(std::get<BoolValue>(before->data).value);
 
-            run("main do\n  IO.write(\"" + path + "\", \"x\")\nend\n");
+            run("main do\n  File.write(\"" + path + "\", \"x\")\nend\n");
             auto afterWrite = run("main do\n  File.exists?(\"" + path + "\")\nend\n");
             assertTrue(std::get<BoolValue>(afterWrite->data).value);
 
@@ -666,9 +666,9 @@ int main() {
             std::filesystem::remove(path);
             auto result = run(
                 "main do\n"
-                "  IO.write(\"" + path + "\", \"a\")\n"
+                "  File.write(\"" + path + "\", \"a\")\n"
                 "  File.append(\"" + path + "\", \"b\")\n"
-                "  IO.read(\"" + path + "\")\n"
+                "  File.read(\"" + path + "\")\n"
                 "end\n"
             );
             assertEqual(std::get<StringValue>(result->data).value, std::string("ab"));
@@ -676,7 +676,7 @@ int main() {
         });
 
         it("reading a nonexistent file returns None", []() {
-            auto result = run("main do\n  IO.read(\"/nonexistent/kex/path/xyz\")\nend\n");
+            auto result = run("main do\n  File.read(\"/nonexistent/kex/path/xyz\")\nend\n");
             assertTrue(std::holds_alternative<NoneValue>(result->data));
         });
 
@@ -690,7 +690,7 @@ int main() {
             std::filesystem::remove(path);
             auto result = run(
                 "main do\n"
-                "  IO.write(\"" + path + "\", \"a\\nb\\nc\")\n"
+                "  File.write(\"" + path + "\", \"a\\nb\\nc\")\n"
                 "  File.lines(\"" + path + "\")\n"
                 "end\n"
             );
@@ -706,7 +706,7 @@ int main() {
             std::filesystem::remove(path);
             auto result = run(
                 "main do\n"
-                "  IO.write(\"" + path + "\", \"a\\nb\")\n"
+                "  File.write(\"" + path + "\", \"a\\nb\")\n"
                 "  File.feed(\"" + path + "\").take(2)\n"
                 "end\n"
             );

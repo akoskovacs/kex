@@ -310,12 +310,12 @@ int main() {
             assertTrue(!has(r, "[1,2,3].map"));
             assertTrue(!has(r, "List.map"));
         });
-        it("File. — record fields and static methods", []() {
+        it("File. — module functions", []() {
             auto db = makePreludeDb();
             auto r = simulate(db, "File.", 0, "File.");
-            assertTrue(has(r, "File.meta"));
-            assertTrue(has(r, "File.name"));
-            assertTrue(has(r, "File.Open") || has(r, "File.New"));
+            assertTrue(has(r, "File.read"));
+            assertTrue(has(r, "File.write"));
+            assertTrue(has(r, "File.exists?"));
         });
         it("23. not split (B) — integer methods rewritten with literal prefix", []() {
             auto db = makePreludeDb();

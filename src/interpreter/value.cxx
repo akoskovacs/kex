@@ -146,6 +146,9 @@ auto Value::toString() const -> std::string {
         else if constexpr (std::is_same_v<T, StreamValue>) {
             return "<Stream>";
         }
+        else if constexpr (std::is_same_v<T, FileHandleValue>) {
+            return "<FileHandle: \"" + v.path + "\">";
+        }
         else if constexpr (std::is_same_v<T, RecordValue>) {
             // Positional constructor (Just(x), Ok(x), Number(n), ...): fields
             // keyed "0", "1", ... — print as Name(v0, v1, ...) in index order
@@ -265,6 +268,7 @@ auto Value::typeName() const -> std::string {
         else if constexpr (std::is_same_v<T, MapValue>) return "Map";
         else if constexpr (std::is_same_v<T, RangeValue>) return "Range";
         else if constexpr (std::is_same_v<T, StreamValue>) return "Stream";
+        else if constexpr (std::is_same_v<T, FileHandleValue>) return "FileHandle";
         else if constexpr (std::is_same_v<T, RecordValue>) return v.typeName;
         else if constexpr (std::is_same_v<T, FunctionValue>) return "Function";
         else if constexpr (std::is_same_v<T, LambdaValue>) return "Lambda";
@@ -458,6 +462,8 @@ auto Value::inspect() const -> std::string {
             }
             else if constexpr (std::is_same_v<T, StreamValue>)
                 return std::string(c(gray)) + "<Stream>" + c(reset);
+            else if constexpr (std::is_same_v<T, FileHandleValue>)
+                return std::string(c(gray)) + "<FileHandle: \"" + node.path + "\">" + c(reset);
             else if constexpr (std::is_same_v<T, RecordValue>) {
                 bool positional = !node.fields.empty();
                 for (size_t i = 0; positional && i < node.fields.size(); i++)

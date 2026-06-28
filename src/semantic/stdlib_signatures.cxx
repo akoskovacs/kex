@@ -120,6 +120,35 @@ auto SignatureTable::withStdlib() -> SignatureTable {
                  Type::list(Type::tuple({genA(), genE()})));
     sig("to",    {genA(), genE()}, Type::unknown());
 
+    // src/interpreter/stdlib/file.cxx — File module
+    sig("File::read",      {Type::string()}, Type::optional(Type::string()));
+    sig("File::write",     {Type::string(), Type::string()}, Type::boolean());
+    sig("File::append",    {Type::string(), Type::string()}, Type::boolean());
+    sig("File::exists?",   {Type::string()}, Type::boolean());
+    sig("File::file?",     {Type::string()}, Type::boolean());
+    sig("File::dir?",      {Type::string()}, Type::boolean());
+    sig("File::delete",    {Type::string()}, Type::boolean());
+    sig("File::copy",      {Type::string(), Type::string()}, Type::boolean());
+    sig("File::rename",    {Type::string(), Type::string()}, Type::boolean());
+    sig("File::lines",     {Type::string()}, Type::optional(Type::list(Type::string())));
+    sig("File::size",      {Type::string()}, Type::optional(Type::integer()));
+    sig("File::basename",  {Type::string()}, Type::string());
+    sig("File::dirname",   {Type::string()}, Type::string());
+    sig("File::extension", {Type::string()}, Type::string());
+    sig("File::join",      {Type::string(), Type::string()}, Type::string());
+    sig("File::absolute",  {Type::string()}, Type::optional(Type::string()));
+
+    // src/interpreter/stdlib/file.cxx — Directory module
+    sig("Directory::exists?",   {Type::string()}, Type::boolean());
+    sig("Directory::dir?",      {Type::string()}, Type::boolean());
+    sig("Directory::file?",     {Type::string()}, Type::boolean());
+    sig("Directory::create",    {Type::string()}, Type::boolean());
+    sig("Directory::delete",    {Type::string()}, Type::boolean());
+    sig("Directory::deleteAll", {Type::string()}, Type::boolean());
+    sig("Directory::list",      {Type::string()}, Type::optional(Type::list(Type::string())));
+    sig("Directory::files",     {Type::string()}, Type::optional(Type::list(Type::string())));
+    sig("Directory::dirs",      {Type::string()}, Type::optional(Type::list(Type::string())));
+
     // src/interpreter/stdlib/string.cxx, list.cxx, map.cxx
     sig("digit?",  {Type::charT()}, Type::boolean());
     sig("alpha?",  {Type::charT()}, Type::boolean());

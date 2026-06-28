@@ -97,8 +97,11 @@ auto Evaluator::registerAdtConstructors() -> void {
                 }
                 if (rec->typeName == "Error") return fallback;
             }
-            throw std::runtime_error(
-                "or expects a Result (Ok/Error) or Optional (Just/None), got " + receiver->typeName());
+            // Raw value (not an ADT wrapper, not None) — already the
+            // successful result; return it directly. This handles stdlib
+            // functions that return a raw value on success and None on failure
+            // (e.g. File.read, File.lines) without requiring Just wrapping.
+            return receiver;
         }};
         m_globalEnv->define("or", val);
     }

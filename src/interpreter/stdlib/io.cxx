@@ -1,18 +1,13 @@
 #include "../evaluator.hxx"
 #include "../../common/color.hxx"
-#include <fstream>
 #include <iostream>
-#include <sstream>
 
 namespace kex::interpreter {
 
-// Everything IO-shaped is namespaced under IO — there is no bare
-// print()/println() anymore. Console: IO.print/IO.printLine (write,
-// with/without trailing newline; IO.put/IO.putLine are aliases) and
-// IO.get/IO.getLine (read one character / one line from stdin). Whole-
-// file read/write also live here (IO.read/IO.write); the remaining
-// filesystem-specific operations (append, exists?, delete, lines, feed)
-// stay under File (see file.cxx).
+// Console I/O only: IO.print/IO.printLine (write, with/without trailing
+// newline; IO.put/IO.putLine are aliases), IO.get/IO.getLine (read one
+// character / one line from stdin), and IO.inspect. File I/O has moved
+// entirely to File (see file.cxx).
 auto Evaluator::registerIOBuiltins() -> void {
     auto reg = [this](const std::string& name, NativeFunc fn) {
         auto val = std::make_shared<Value>();
@@ -91,30 +86,6 @@ auto Evaluator::registerIOBuiltins() -> void {
         return Value::string(std::string(1, static_cast<char>(c)));
     });
 
-    // IO.read(path) -> String | None
-    reg("IO::read", [](std::vector<ValuePtr> args) -> ValuePtr {
-        if (args.empty()) return Value::none();
-        auto* pathStr = std::get_if<StringValue>(&args[0]->data);
-        if (!pathStr) return Value::none();
-        std::ifstream file(pathStr->value, std::ios::binary);
-        if (!file.is_open()) return Value::none();
-        std::ostringstream buffer;
-        buffer << file.rdbuf();
-        if (file.bad()) return Value::none();
-        return Value::string(buffer.str());
-    });
-
-    // IO.write(path, content) -> Bool
-    reg("IO::write", [](std::vector<ValuePtr> args) -> ValuePtr {
-        if (args.size() < 2) return Value::boolean(false);
-        auto* pathStr = std::get_if<StringValue>(&args[0]->data);
-        if (!pathStr) return Value::boolean(false);
-        std::string content = args[1]->toString();
-        std::ofstream file(pathStr->value, std::ios::binary | std::ios::trunc);
-        if (!file.is_open()) return Value::boolean(false);
-        file << content;
-        return Value::boolean(static_cast<bool>(file));
-    });
 }
 
 } // namespace kex::interpreter

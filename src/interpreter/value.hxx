@@ -1,5 +1,6 @@
 #pragma once
 
+#include <fstream>
 #include <functional>
 #include <gmpxx.h>
 #include <memory>
@@ -40,6 +41,11 @@ struct StreamValue {
     int64_t offset = 0;
 };
 
+struct FileHandleValue {
+    std::shared_ptr<std::fstream> stream;
+    std::string path;
+};
+
 struct RecordValue {
     std::string typeName;
     std::unordered_map<std::string, ValuePtr> fields;
@@ -75,6 +81,7 @@ struct Value {
         MapValue,
         RangeValue,
         StreamValue,
+        FileHandleValue,
         RecordValue,
         FunctionValue,
         LambdaValue

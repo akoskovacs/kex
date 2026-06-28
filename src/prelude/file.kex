@@ -1,85 +1,142 @@
 module FS do
   type FileModes = Read | Write | Append | ReadWrite
 
-  record File do
-    meta : Unknown # internal metadata for the compiler/interpreter/runtime, undefined for user code
-    name : String # name of the file
-
-    static do
-      # options are OS-specific, e.g. on Windows you can pass "binary" to open a file in binary mode.
-      let Open(path: String, mode: FileModes, options: Unknown, block: (File -> T)) -> File do
-        return File { meta: Unknown, name: path }
-      end
-
-      let New(path: String, mode: FileModes, options: Unknown, block: (File -> T)) -> File do
-        return File { meta: Unknown, name: path }
-      end
-    end
-  end
-
-
-  module File do
-    # Appends +content+ to +path+, creating the file if it does not exist.
-    # Returns +true+ on success.
-    # This is a foul function — it performs file I/O.
-    #
-    # @param path    [String]
-    # @param content [String]
-    # @return [Bool]
+  foul module File do
+    # Opens +path+ in +mode+ and passes a +FileHandle+ to the block.
+    # Returns the block's result, or +None+ if the file cannot be opened.
+    # The handle is closed automatically when the block exits.
     #
     # @example
-    #   File.append("log.txt", "new entry\n")
+    #   File.open("data.txt", Read) { |f|
+    #     f.readLine
+    #   }
+    open : (String, FileModes, (FileHandle -> T)) -> T?
+
+    # Opens +path+ without a block; caller must call +handle.close+.
+    # Returns +None+ if the file cannot be opened.
+    open : (String, FileModes) -> FileHandle?
+
+    # Reads the entire content of +path+. Returns +None+ on failure.
+    read : String -> String?
+
+    # Writes +content+ to +path+, replacing any existing file.
+    # Returns +true+ on success.
+    write : (String, String) -> Bool
+
+    # Appends +content+ to +path+, creating the file if needed.
+    # Returns +true+ on success.
     append : (String, String) -> Bool
 
-    # Returns +true+ if +path+ exists in the filesystem.
-    # This is a foul function — it queries the filesystem.
-    #
-    # @param path [String]
-    # @return [Bool]
-    #
-    # @example
-    #   File.exists?("config.kex")   # => true or false
+    # Returns +true+ if +path+ is an existing regular file.
     exists? : String -> Bool
 
+    # Alias for +exists?+ — explicit predicate for "is this a regular file".
+    file? : String -> Bool
+
+    # Returns +true+ if +path+ is an existing directory.
+    dir? : String -> Bool
+
     # Deletes +path+. Returns +true+ if the file was removed.
-    # This is a foul function — it modifies the filesystem.
-    #
-    # @param path [String]
-    # @return [Bool]
-    #
-    # @example
-    #   File.delete("tmp.txt")
     delete : String -> Bool
+
+    # Copies +src+ to +dst+, overwriting +dst+ if it exists.
+    # Returns +true+ on success.
+    copy : (String, String) -> Bool
+
+    # Renames (moves) +src+ to +dst+. Returns +true+ on success.
+    rename : (String, String) -> Bool
 
     # Reads all lines of +path+ into a +[String]+.
     # Returns +None+ if the file cannot be opened.
-    # Lines do not include the trailing newline character.
-    # This is a foul function — it performs file I/O.
-    #
-    # @param path [String]
-    # @return [[String]?]
-    #
-    # @example
-    #   match File.lines("words.txt") do
-    #     Just(lines) -> lines.each { |l| IO.printLine(l) }
-    #     None -> IO.printLine("not found")
-    #   end
     lines : String -> [String]?
 
     # Opens +path+ and returns a lazy +Stream<String>+ of its lines.
     # Returns +None+ if the file cannot be opened.
-    # The entire file is read eagerly at call time; the stream supports
-    # index-based access but is not a true single-consumption feed.
-    # This is a foul function — it performs file I/O.
-    #
-    # @param path [String]
-    # @return [Stream<String>?]
-    #
-    # @example
-    #   match File.feed("big.log") do
-    #     Just(s) -> s.take(10).each { |l| IO.printLine(l) }
-    #     None -> IO.printLine("not found")
-    #   end
     feed : String -> Stream<String>?
+
+    # Returns the file size in bytes, or +None+ if inaccessible.
+    size : String -> Int?
+
+    # Returns the filename component of +path+ (no directory).
+    #
+    # @example  File.basename("src/main.kex")   # => "main.kex"
+    basename : String -> String
+
+    # Returns the directory component of +path+.
+    #
+    # @example  File.dirname("src/main.kex")    # => "src"
+    dirname : String -> String
+
+    # Returns the file extension including the dot, or empty string.
+    #
+    # @example  File.extension("main.kex")   # => ".kex"
+    extension : String -> String
+
+    # Joins two path components using the OS path separator.
+    #
+    # @example  File.join("src", "main.kex")   # => "src/main.kex"
+    join : (String, String) -> String
+
+    # Returns the canonical absolute path, or +None+ on failure.
+    absolute : String -> String?
+  end
+
+  foul module Directory do
+    # Returns +true+ if +path+ is an existing directory.
+    exists? : String -> Bool
+
+    # Alias for +exists?+ — explicit predicate for "is this a directory".
+    dir? : String -> Bool
+
+    # Returns +true+ if +path+ is an existing regular file.
+    file? : String -> Bool
+
+    # Creates +path+ and any missing parent directories.
+    # Returns +true+ on success.
+    create : String -> Bool
+
+    # Deletes the empty directory at +path+. Returns +true+ on success.
+    delete : String -> Bool
+
+    # Recursively deletes +path+ and all its contents. Returns +true+ on success.
+    deleteAll : String -> Bool
+
+    # Returns all entry names directly inside +path+, or +None+ if inaccessible.
+    list : String -> [String]?
+
+    # Returns only regular file names directly inside +path+, or +None+.
+    files : String -> [String]?
+
+    # Returns only subdirectory names directly inside +path+, or +None+.
+    dirs : String -> [String]?
+
+    # Returns the current working directory path.
+    current : String
+
+    # Returns the user's home directory, or +None+ if unavailable.
+    home : String?
+  end
+end
+
+# Mocking support for tests — substitute in-memory files and directories
+# for real filesystem access without touching disk.
+#
+# @example
+#   Mock.FS.File("config.txt", "debug=true\n")
+#   Mock.FS.Directory("logs")
+#   # ... run code under test ...
+#   Mock.FS.clear()
+foul module Mock do
+  foul module FS do
+    # Registers an in-memory file at +path+ with +content+.
+    # All File and FileHandle operations on +path+ will use this content.
+    File : (String, String) -> Unit
+
+    # Registers an in-memory directory at +path+.
+    # Directory.exists? and Directory.list will see it.
+    Directory : String -> Unit
+
+    # Clears all mocked files and directories.
+    clear : Unit -> Unit
   end
 end

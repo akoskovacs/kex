@@ -1,10 +1,6 @@
-module IO do
+foul module IO do
   # Writes each argument to stdout followed by a newline.
   # Multiple arguments are printed consecutively with no separator.
-  # This is a foul function — it performs console output.
-  #
-  # @param msg [String]  one or more values (coerced to String)
-  # @return [Unit]
   #
   # @example
   #   IO.printLine("hello")      # prints: hello
@@ -12,10 +8,6 @@ module IO do
   printLine : String -> Unit
 
   # Writes each argument to stdout without a trailing newline.
-  # This is a foul function — it performs console output.
-  #
-  # @param msg [String]  one or more values (coerced to String)
-  # @return [Unit]
   #
   # @example
   #   IO.print("hello ")
@@ -28,60 +20,19 @@ module IO do
   # Alias for +print+.
   put : String -> Unit
 
-  # Pretty-prints a colored inspect representation of +val+ to stderr,
-  # showing the value and its type (e.g. +42 : Int+, +None : None+,
-  # +Ok(5) : Ok+). Returns +val+ unchanged so it can be inserted into
-  # any pipeline without changing the result.
-  # Treated as pure by the compiler — purity checking ignores this call.
-  # In release builds this call and its argument are fully eliminated.
-  #
-  # @param val [A]  any value
-  # @return [A]     the same value, unchanged
+  # Pretty-prints a colored inspect representation of +val+ to stderr.
+  # Returns +val+ unchanged so it can be inserted into any pipeline.
+  # Treated as pure by the type checker — purity checking ignores this call.
   #
   # @example
-  #   IO.inspect(xs.first)                  # stderr: None : None
-  #   IO.inspect(user)                      # stderr: User { name: "Alice" } : User
-  #   xs.map(&double).inspect.filter(&even?)  # inspect mid-pipeline
+  #   xs.map(&double).inspect.filter(&even?)
   inspect : A -> A
 
   # Reads one line from stdin. Returns +None+ at end-of-input.
-  # This is a foul function — it reads from stdin.
   #
-  # @return [String?]
-  #
-  # @example
-  #   let line = IO.getLine.or("")
+  # @example  IO.getLine.or("")
   getLine : String?
 
   # Reads a single character from stdin. Returns +None+ at end-of-input.
-  # This is a foul function — it reads from stdin.
-  #
-  # @return [String?]
   get : String?
-
-  # Reads the entire contents of +path+ into a +String+.
-  # Returns +None+ if the file cannot be opened.
-  # This is a foul function — it performs file I/O.
-  #
-  # @param path [String]
-  # @return [String?]
-  #
-  # @example
-  #   match IO.read("config.txt") do
-  #     Just(contents) -> IO.printLine(contents)
-  #     None -> IO.printLine("not found")
-  #   end
-  read : String -> String?
-
-  # Writes +content+ to +path+, overwriting any existing file.
-  # Returns +true+ on success.
-  # This is a foul function — it performs file I/O.
-  #
-  # @param path    [String]
-  # @param content [String]
-  # @return [Bool]
-  #
-  # @example
-  #   IO.write("out.txt", "hello\n")
-  write : (String, String) -> Bool
 end
