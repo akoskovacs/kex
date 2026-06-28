@@ -1,0 +1,54 @@
+# kex: no-check
+# Specs for wc.kex — exercises wordCount and sumCounts via Mock.FS.
+
+describe("wordCount") do
+  it("counts lines, words, and bytes") do
+    Mock.FS.File("a.txt", "hello world\nfoo bar baz\n")
+    let counts = wordCount("a.txt")
+    assert(counts.first.or(-1) == 2)
+    assert(counts.second.or(-1) == 5)
+    assert(counts.third.or(-1) == 24)
+    Mock.FS.clear()
+  end
+
+  it("counts a single line with no trailing newline") do
+    Mock.FS.File("b.txt", "one two three")
+    let counts = wordCount("b.txt")
+    assert(counts.first.or(-1) == 1)
+    assert(counts.second.or(-1) == 3)
+    Mock.FS.clear()
+  end
+
+  it("returns zeros for an empty file") do
+    Mock.FS.File("empty.txt", "")
+    let counts = wordCount("empty.txt")
+    assert(counts.first.or(-1) == 0)
+    assert(counts.second.or(-1) == 0)
+    assert(counts.third.or(-1) == 0)
+    Mock.FS.clear()
+  end
+
+  it("returns zeros for a missing file") do
+    Mock.FS.clear()
+    let counts = wordCount("/no/such/file.txt")
+    assert(counts.first.or(-1) == 0)
+    assert(counts.second.or(-1) == 0)
+    assert(counts.third.or(-1) == 0)
+  end
+end
+
+describe("sumCounts") do
+  it("sums lines, words, and bytes across multiple counts") do
+    let total = sumCounts([[3, 21, 105], [3, 12, 64]])
+    assert(total.first.or(-1) == 6)
+    assert(total.second.or(-1) == 33)
+    assert(total.third.or(-1) == 169)
+  end
+
+  it("returns zeros for an empty list") do
+    let total = sumCounts([])
+    assert(total.first.or(-1) == 0)
+    assert(total.second.or(-1) == 0)
+    assert(total.third.or(-1) == 0)
+  end
+end

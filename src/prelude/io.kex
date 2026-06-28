@@ -35,4 +35,22 @@ foul module IO do
 
   # Reads a single character from stdin. Returns +None+ at end-of-input.
   get : String?
+
+  # Writes a line to stderr. Does not exit.
+  # Use for error messages that should not go to stdout.
+  #
+  # @example  IO.printError("config file not found")
+  printError : String -> Unit
+
+  # Alias for +printError+ — use when signalling a non-fatal condition.
+  warn : String -> Unit
+
+  # Alias for +printError+ — longer form of +warn+.
+  warning : String -> Unit
+
+  # Terminates the process with the given numeric exit code.
+  # Like C's exit(3); the shell sees this code.
+  #
+  # @example  IO.exit(1)
+  exit : Int -> Unit
 end

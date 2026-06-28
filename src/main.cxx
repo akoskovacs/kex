@@ -951,7 +951,9 @@ int main(int argc, char* argv[]) {
                 break;
             }
 
-            evaluator.execute(program);
+            auto result = evaluator.execute(program);
+            if (auto* i = std::get_if<kex::interpreter::IntValue>(&result->data))
+                return static_cast<int>(i->value);
             return 0;
         }
 

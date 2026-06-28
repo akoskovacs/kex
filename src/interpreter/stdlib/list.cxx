@@ -241,6 +241,32 @@ auto Evaluator::registerListBuiltins() -> void {
         return Value::none();
     });
 
+    reg("second", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.empty()) return Value::none();
+        if (auto* list = std::get_if<ListValue>(&args[0]->data)) {
+            if (list->elements.size() < 2) return Value::none();
+            return Value::record("Just", {{"0", list->elements[1]}});
+        }
+        if (auto* str = std::get_if<StringValue>(&args[0]->data)) {
+            if (str->value.size() < 2) return Value::none();
+            return Value::record("Just", {{"0", Value::character(str->value[1])}});
+        }
+        return Value::none();
+    });
+
+    reg("third", [](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.empty()) return Value::none();
+        if (auto* list = std::get_if<ListValue>(&args[0]->data)) {
+            if (list->elements.size() < 3) return Value::none();
+            return Value::record("Just", {{"0", list->elements[2]}});
+        }
+        if (auto* str = std::get_if<StringValue>(&args[0]->data)) {
+            if (str->value.size() < 3) return Value::none();
+            return Value::record("Just", {{"0", Value::character(str->value[2])}});
+        }
+        return Value::none();
+    });
+
     reg("rest", [](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.empty()) return Value::list({});
         if (auto* str = std::get_if<StringValue>(&args[0]->data))
@@ -495,9 +521,7 @@ auto Evaluator::registerListBuiltins() -> void {
         return Value::record("Just", {{"0", result}});
     });
 
-    reg("sum", [getElements](std::vector<ValuePtr> args) -> ValuePtr {
-        if (args.empty()) return Value::integer(0);
-        auto elems = getElements(args[0]);
+    auto numericSum = [](const std::vector<ValuePtr>& elems) -> ValuePtr {
         bool hasFloat = false;
         for (const auto& e : elems)
             if (std::holds_alternative<FloatValue>(e->data)) { hasFloat = true; break; }
@@ -512,6 +536,50 @@ auto Evaluator::registerListBuiltins() -> void {
         int64_t total = 0;
         for (const auto& e : elems)
             if (auto* i = std::get_if<IntValue>(&e->data)) total += i->value;
+        return Value::integer(total);
+    };
+
+    reg("sum", [getElements, numericSum](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.empty()) return Value::integer(0);
+        auto elems = getElements(args[0]);
+        if (args.size() >= 2) {
+            auto* fn = std::get_if<FunctionValue>(&args[1]->data);
+            if (fn && fn->native) {
+                std::vector<ValuePtr> mapped;
+                mapped.reserve(elems.size());
+                for (const auto& e : elems) mapped.push_back(fn->native({e}));
+                return numericSum(mapped);
+            }
+        }
+        return numericSum(elems);
+    });
+
+    reg("product", [getElements](std::vector<ValuePtr> args) -> ValuePtr {
+        if (args.empty()) return Value::integer(1);
+        auto elems = getElements(args[0]);
+        std::vector<ValuePtr> mapped;
+        if (args.size() >= 2) {
+            auto* fn = std::get_if<FunctionValue>(&args[1]->data);
+            if (fn && fn->native) {
+                mapped.reserve(elems.size());
+                for (const auto& e : elems) mapped.push_back(fn->native({e}));
+                elems = mapped;
+            }
+        }
+        bool hasFloat = false;
+        for (const auto& e : elems)
+            if (std::holds_alternative<FloatValue>(e->data)) { hasFloat = true; break; }
+        if (hasFloat) {
+            double total = 1.0;
+            for (const auto& e : elems) {
+                if (auto* f = std::get_if<FloatValue>(&e->data)) total *= f->value;
+                else if (auto* i = std::get_if<IntValue>(&e->data)) total *= static_cast<double>(i->value);
+            }
+            return Value::floating(total);
+        }
+        int64_t total = 1;
+        for (const auto& e : elems)
+            if (auto* i = std::get_if<IntValue>(&e->data)) total *= i->value;
         return Value::integer(total);
     });
 

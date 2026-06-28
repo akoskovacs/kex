@@ -61,6 +61,29 @@ auto Evaluator::registerIOBuiltins() -> void {
     m_globalEnv->define("IO::put", m_globalEnv->get("IO::print"));
     m_globalEnv->define("IO::putLine", m_globalEnv->get("IO::printLine"));
 
+    // IO.printError(msg) — write a line to stderr (no exit).
+    reg("IO::printError", [this](std::vector<ValuePtr> args) -> ValuePtr {
+        std::string out;
+        for (const auto& a : args) out += a->toString();
+        out += "\n";
+        std::cerr << out;
+        m_output += out;
+        return Value::unit();
+    });
+
+    // IO.warn / IO.warning — aliases for printError; softer signal names.
+    m_globalEnv->define("IO::warn",    m_globalEnv->get("IO::printError"));
+    m_globalEnv->define("IO::warning", m_globalEnv->get("IO::printError"));
+
+    // IO.exit(code) — terminate with the given numeric exit code.
+    reg("IO::exit", [](std::vector<ValuePtr> args) -> ValuePtr {
+        int code = 0;
+        if (!args.empty()) {
+            if (auto* i = std::get_if<IntValue>(&args[0]->data)) code = static_cast<int>(i->value);
+        }
+        std::exit(code);
+    });
+
     // die(msg) — print msg to stderr and terminate the process.
     // Typed as String -> Void (never returns).
     reg("die", [](std::vector<ValuePtr> args) -> ValuePtr {

@@ -70,10 +70,14 @@ auto SignatureTable::withStdlib() -> SignatureTable {
     sig("Math::atan2", {numberLike(), numberLike()}, Type::float64());
 
     // src/interpreter/stdlib/list.cxx
-    sig("first", {Type::list(genA())}, Type::optional(genA()));
-    sig("first", {Type::string()},     Type::optional(Type::charT()));
-    sig("last",  {Type::list(genA())}, Type::optional(genA()));
-    sig("last",  {Type::string()},     Type::optional(Type::charT()));
+    sig("first",  {Type::list(genA())}, Type::optional(genA()));
+    sig("first",  {Type::string()},     Type::optional(Type::charT()));
+    sig("second", {Type::list(genA())}, Type::optional(genA()));
+    sig("second", {Type::string()},     Type::optional(Type::charT()));
+    sig("third",  {Type::list(genA())}, Type::optional(genA()));
+    sig("third",  {Type::string()},     Type::optional(Type::charT()));
+    sig("last",   {Type::list(genA())}, Type::optional(genA()));
+    sig("last",   {Type::string()},     Type::optional(Type::charT()));
     sig("rest",  {Type::list(genA())}, Type::list(genA()));
     sig("rest",  {Type::string()},     Type::string());
     sig("take",  {Type::list(genA()), Type::integer()}, Type::list(genA()));
@@ -104,6 +108,9 @@ auto SignatureTable::withStdlib() -> SignatureTable {
     sig("max",   {Type::list(genA())}, Type::optional(genA()));
     sig("max",   {Type::list(genA()), Type::func({genA()}, Type::typeVar(-3))}, Type::optional(genA()));
     sig("sum",   {Type::list(numberLike())}, numberLike());
+    sig("sum",   {Type::list(genA()), Type::func({genA()}, genE())}, genE());
+    sig("product", {Type::list(numberLike())}, numberLike());
+    sig("product", {Type::list(genA()), Type::func({genA()}, genE())}, genE());
     sig("flatMap", {Type::list(genA()), Type::func({genA()}, Type::list(genE()))}, Type::list(genE()));
     sig("flatMap", {Type::optional(genA()), Type::func({genA()}, Type::optional(genE()))}, Type::optional(genE()));
     sig("join",  {Type::list(Type::string()), Type::string()}, Type::string());
@@ -126,7 +133,7 @@ auto SignatureTable::withStdlib() -> SignatureTable {
     sig("File::append",    {Type::string(), Type::string()}, Type::boolean());
     sig("File::exists?",   {Type::string()}, Type::boolean());
     sig("File::file?",     {Type::string()}, Type::boolean());
-    sig("File::dir?",      {Type::string()}, Type::boolean());
+    sig("File::directory?",      {Type::string()}, Type::boolean());
     sig("File::delete",    {Type::string()}, Type::boolean());
     sig("File::copy",      {Type::string(), Type::string()}, Type::boolean());
     sig("File::rename",    {Type::string(), Type::string()}, Type::boolean());
@@ -140,14 +147,14 @@ auto SignatureTable::withStdlib() -> SignatureTable {
 
     // src/interpreter/stdlib/file.cxx — Directory module
     sig("Directory::exists?",   {Type::string()}, Type::boolean());
-    sig("Directory::dir?",      {Type::string()}, Type::boolean());
+    sig("Directory::directory?",      {Type::string()}, Type::boolean());
     sig("Directory::file?",     {Type::string()}, Type::boolean());
     sig("Directory::create",    {Type::string()}, Type::boolean());
     sig("Directory::delete",    {Type::string()}, Type::boolean());
     sig("Directory::deleteAll", {Type::string()}, Type::boolean());
     sig("Directory::list",      {Type::string()}, Type::optional(Type::list(Type::string())));
     sig("Directory::files",     {Type::string()}, Type::optional(Type::list(Type::string())));
-    sig("Directory::dirs",      {Type::string()}, Type::optional(Type::list(Type::string())));
+    sig("Directory::directories",      {Type::string()}, Type::optional(Type::list(Type::string())));
 
     // src/interpreter/stdlib/string.cxx, list.cxx, map.cxx
     sig("digit?",  {Type::charT()}, Type::boolean());
@@ -186,10 +193,14 @@ auto SignatureTable::withStdlib() -> SignatureTable {
     sig("startsWith?", {Type::string(), Type::string()}, Type::boolean());
     sig("endsWith?",   {Type::string(), Type::string()}, Type::boolean());
     // IO — accept any value; result is Unit (used for side-effect checking)
-    sig("printLine", {genA()}, Type::unit());
-    sig("print",     {genA()}, Type::unit());
-    sig("readLine",  {}, Type::string());
-    sig("inspect",   {genA()}, genA());  // passes value through, prints to stderr
+    sig("printLine",   {genA()}, Type::unit());
+    sig("print",       {genA()}, Type::unit());
+    sig("readLine",    {}, Type::string());
+    sig("inspect",     {genA()}, genA());  // passes value through, prints to stderr
+    sig("IO::printError", {genA()}, Type::unit());
+    sig("IO::warn",       {genA()}, Type::unit());
+    sig("IO::warning",    {genA()}, Type::unit());
+    sig("IO::exit",       {Type::integer()}, Type::voidType());
     // assert — test helper (has type signatures; it/describe/assert_equal are
     // prelude-only and registered separately in ResolvePass::isKnown)
     sig("assert",       {Type::boolean()}, Type::unit());

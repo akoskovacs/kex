@@ -57,23 +57,23 @@ main do
   # ── File.open resource block ────────────────────────────────────────
   IO.printLine("\n=== File.open resource block ===")
 
-  let first = File.open(tmp, Read) { |f|
+  let first = File.open(tmp, Read) do |f|
     f.readLine
-  }
+  end
   IO.printLine("first line via handle: ${first.or("(none)")}")
 
   # Write through a handle
-  File.open(tmp, Append) { |f|
+  File.open(tmp, Append) do |f|
     f.writeLine("Appended via handle.")
-  }
+  end
   IO.printLine("after handle append, lines: ${File.lines(tmp).or([]).count}")
 
   # ── Type predicates ─────────────────────────────────────────────────
   IO.printLine("\n=== Type predicates ===")
 
   IO.printLine("tmp is file?:      ${File.file?(tmp)}")
-  IO.printLine("tmp is dir?:       ${File.dir?(tmp)}")
-  IO.printLine("/tmp is dir?:      ${Directory.dir?("/tmp")}")
+  IO.printLine("tmp is dir?:       ${File.directory?(tmp)}")
+  IO.printLine("/tmp is dir?:      ${Directory.directory?("/tmp")}")
   IO.printLine("/tmp is file?:     ${Directory.file?("/tmp")}")
 
   # ── Copy, rename, delete ────────────────────────────────────────────
@@ -97,20 +97,20 @@ main do
 
   let dir = File.join(Directory.current(), "kex_demo_dir")
   Directory.create(dir)
-  IO.printLine("created dir:  ${Directory.dir?(dir)}")
+  IO.printLine("created dir:  ${Directory.directory?(dir)}")
 
   File.write(File.join(dir, "a.txt"), "alpha")
   File.write(File.join(dir, "b.txt"), "beta")
   IO.printLine("files in dir: ${Directory.files(dir).or([])}")
-  IO.printLine("dirs in dir:  ${Directory.dirs(dir).or([])}")
+  IO.printLine("dirs in dir:  ${Directory.directories(dir).or([])}")
 
   let sub = File.join(dir, "sub")
   Directory.create(sub)
-  IO.printLine("after mkdir sub, dirs: ${Directory.dirs(dir).or([])}")
+  IO.printLine("after mkdir sub, dirs: ${Directory.directories(dir).or([])}")
   IO.printLine("current:      ${Directory.current()}")
 
   Directory.deleteAll(dir)
-  IO.printLine("after deleteAll, dir gone?: ${!Directory.dir?(dir)}")
+  IO.printLine("after deleteAll, dir gone?: ${!Directory.directory?(dir)}")
 
   # ── Mock.FS — in-memory filesystem for tests ─────────────────────────
   IO.printLine("\n=== Mock.FS ===")
@@ -121,7 +121,7 @@ main do
 
   IO.printLine("mock file exists?:  ${File.file?("config.txt")}")
   IO.printLine("real file exists?:  ${File.file?("does_not_exist.txt")}")
-  IO.printLine("mock dir exists?:   ${Directory.dir?("cache")}")
+  IO.printLine("mock dir exists?:   ${Directory.directory?("cache")}")
 
   let cfg = File.lines("config.txt").or([])
   IO.printLine("config lines: ${cfg}")

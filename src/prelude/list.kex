@@ -12,6 +12,26 @@ make [X] do
   let first(@[]) = None
   let first(@[x|_]) = Just(x)
 
+  # Returns the second element wrapped in +Just+, or +None+ if the list has
+  # fewer than two elements.
+  #
+  # @return [X?]
+  #
+  # @example
+  #   [1, 2, 3].second   # => Just(2)
+  #   [1].second         # => None
+  second :> X?
+
+  # Returns the third element wrapped in +Just+, or +None+ if the list has
+  # fewer than three elements.
+  #
+  # @return [X?]
+  #
+  # @example
+  #   [1, 2, 3].third   # => Just(3)
+  #   [1, 2].third      # => None
+  third :> X?
+
   # Returns all elements after the first. Returns +[]+ for an empty or
   # single-element list.
   #
@@ -343,6 +363,15 @@ make [Number] do
   let sum(@[]) = 0
   let sum(@[x|xs]) = x + xs.sum
 
+  # Maps each element through +f+ and sums the results.
+  #
+  # @param f [X -> Number]
+  # @return [Number]
+  #
+  # @example
+  #   ["hello", "hi"].sum { |s| s.count }   # => 7
+  sum :> (X -> Number) -> Number
+
   # Multiplies all elements. Returns +1+ for an empty list.
   #
   # @return [Number]
@@ -353,6 +382,15 @@ make [Number] do
   product :> Number
   let product(@[]) = 1
   let product(@[x|xs]) = x * xs.product
+
+  # Maps each element through +f+ and multiplies the results.
+  #
+  # @param f [X -> Number]
+  # @return [Number]
+  #
+  # @example
+  #   [[1,2],[3,4]].product { |pair| pair.first.or(1) }   # => 3
+  product :> (X -> Number) -> Number
 
   # Returns the smallest element wrapped in +Just+, or +None+ for an empty list.
   #

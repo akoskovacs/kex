@@ -34,7 +34,7 @@ module FS do
     file? : String -> Bool
 
     # Returns +true+ if +path+ is an existing directory.
-    dir? : String -> Bool
+    directory? : String -> Bool
 
     # Deletes +path+. Returns +true+ if the file was removed.
     delete : String -> Bool
@@ -86,7 +86,7 @@ module FS do
     exists? : String -> Bool
 
     # Alias for +exists?+ — explicit predicate for "is this a directory".
-    dir? : String -> Bool
+    directory? : String -> Bool
 
     # Returns +true+ if +path+ is an existing regular file.
     file? : String -> Bool
@@ -108,7 +108,7 @@ module FS do
     files : String -> [String]?
 
     # Returns only subdirectory names directly inside +path+, or +None+.
-    dirs : String -> [String]?
+    directories : String -> [String]?
 
     # Returns the current working directory path.
     current : String

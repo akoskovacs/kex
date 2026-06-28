@@ -1,0 +1,60 @@
+# Word count — mimics wc(1).
+# Usage: kex examples/wc.kex file1 file2 ...
+
+# Returns [lineCount, wordCount, byteCount] for a single file.
+# Missing files produce zeros rather than errors.
+foul wordCount(path: String) -> [Int] do
+  if !File.exists?(path)
+    IO.printError("wc: ${path}: no such file")
+    return [0, 0, 0]
+  end
+
+  let lines = File.lines(path).or([])
+
+  let lineCount = lines.count
+  let words = lines.map do |line|
+    line.split(" ").count { |w| !w.empty? }  # words per line
+  end
+  let bytes = File.size(path).or(0)
+
+  [lineCount, words.sum, bytes]
+end
+
+# Prints one wc-style row: "  lines  words  bytes  label"
+foul printRow(counts: [Int], label: String) -> Unit do
+  let lc    = counts.first.or(0)
+  let words = counts.second.or(0)
+  let bytes = counts.third.or(0)
+
+  IO.printLine("  ${lc}  ${words}  ${bytes} ${label}")
+end
+
+# Column-wise sum across multiple count triples.
+foul sumCounts(all: [[Int]]) -> [Int] do
+  [
+    all.sum { |c| c.first.or(0) },
+    all.sum { |c| c.second.or(0) },
+    all.sum { |c| c.third.or(0) }
+  ]
+end
+
+main(args) do
+  if args.count == 0
+    IO.printError("Usage: kex examples/wc.kex file1 file2 ...")
+    return 1
+  end
+
+  # Count each file once, then reuse results for both printing and the total.
+  let counts = args.map { |f| wordCount(f) }
+
+  # zip pairs each count triple with its filename; order matches printRow.
+  counts.zip(args).each do |pair|
+    let (c, f) = pair
+    printRow(c, f)
+  end
+
+  # Only print a total line when there is more than one file, like wc(1).
+  if args.count > 1
+    printRow(sumCounts(counts), "total")
+  end
+end

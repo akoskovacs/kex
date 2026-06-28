@@ -275,7 +275,7 @@ auto Evaluator::registerFileBuiltins() -> void {
     reg("File::file?",   fileExistsFn);
 
     // File.dir?(path) -> Bool
-    reg("File::dir?", [this](std::vector<ValuePtr> args) -> ValuePtr {
+    reg("File::directory?", [this](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.empty()) return Value::boolean(false);
         auto* pathStr = std::get_if<StringValue>(&args[0]->data);
         if (!pathStr) return Value::boolean(false);
@@ -457,7 +457,7 @@ auto Evaluator::registerDirectoryBuiltins() -> void {
         return Value::boolean(std::filesystem::is_directory(pathStr->value, ec));
     };
     reg("Directory::exists?", dirExistsFn);
-    reg("Directory::dir?",    dirExistsFn);
+    reg("Directory::directory?",    dirExistsFn);
 
     // Directory.file?(path) -> Bool
     reg("Directory::file?", [this](std::vector<ValuePtr> args) -> ValuePtr {
@@ -579,7 +579,7 @@ auto Evaluator::registerDirectoryBuiltins() -> void {
     });
 
     // Directory.dirs(path) -> [String]?
-    reg("Directory::dirs", [this](std::vector<ValuePtr> args) -> ValuePtr {
+    reg("Directory::directories", [this](std::vector<ValuePtr> args) -> ValuePtr {
         if (args.empty()) return Value::none();
         auto* pathStr = std::get_if<StringValue>(&args[0]->data);
         if (!pathStr) return Value::none();
