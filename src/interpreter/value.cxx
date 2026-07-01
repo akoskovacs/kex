@@ -60,6 +60,10 @@ auto Value::variant(std::string tag, std::string parentType, std::vector<ValuePt
     return std::make_shared<Value>(Value{VariantValue{std::move(tag), std::move(parentType), std::move(args)}});
 }
 
+auto Value::module(std::string name) -> ValuePtr {
+    return std::make_shared<Value>(Value{ModuleValue{std::move(name)}});
+}
+
 auto Value::list(std::vector<ValuePtr> elems) -> ValuePtr {
     return std::make_shared<Value>(Value{ListValue{std::move(elems)}});
 }
@@ -113,6 +117,7 @@ auto Value::toString() const -> std::string {
             }
             return result + ")";
         }
+        else if constexpr (std::is_same_v<T, ModuleValue>) return v.name;
         else if constexpr (std::is_same_v<T, ListValue>) {
             // A list of nothing but Chars displays as text, not as a
             // bracketed list — [Char] is meant to look like a String from
@@ -286,6 +291,7 @@ auto Value::typeName() const -> std::string {
         else if constexpr (std::is_same_v<T, BoolValue>) return "Bool";
         else if constexpr (std::is_same_v<T, AtomValue>) return "Atom";
         else if constexpr (std::is_same_v<T, VariantValue>) return v.tag;
+        else if constexpr (std::is_same_v<T, ModuleValue>) return "Module";
         else if constexpr (std::is_same_v<T, ListValue>) return "List";
         else if constexpr (std::is_same_v<T, TupleValue>) return "Tuple";
         else if constexpr (std::is_same_v<T, MapValue>) return "Map";
@@ -461,6 +467,8 @@ auto Value::inspect() const -> std::string {
                 }
                 return result + ")";
             }
+            else if constexpr (std::is_same_v<T, ModuleValue>)
+                return std::string(c(cyan)) + node.name + c(reset);
             else if constexpr (std::is_same_v<T, ListValue>) {
                 bool allChars = !node.elements.empty();
                 for (const auto& el : node.elements)

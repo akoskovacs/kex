@@ -871,9 +871,9 @@ int main() {
         it("ENV.get returns Just(value) for a set variable", []() {
             setenv("KEX_TEST_ENV_VAR", "hello", 1);
             auto result = run("main do\n  ENV.get(\"KEX_TEST_ENV_VAR\")\nend\n");
-            auto& rec = std::get<RecordValue>(result->data);
-            assertEqual(rec.typeName, std::string("Just"));
-            assertEqual(std::get<StringValue>(rec.fields.at("0")->data).value, std::string("hello"));
+            auto& var = std::get<VariantValue>(result->data);
+            assertEqual(var.tag, std::string("Just"));
+            assertEqual(std::get<StringValue>(var.args.at(0)->data).value, std::string("hello"));
             unsetenv("KEX_TEST_ENV_VAR");
         });
 
@@ -907,9 +907,9 @@ int main() {
     describe("Interpreter — Map", []() {
         it("get returns Just(value) when present", []() {
             auto result = run("main do\n  { \"a\": 1 }.get(\"a\")\nend\n");
-            auto& rec = std::get<RecordValue>(result->data);
-            assertEqual(rec.typeName, std::string("Just"));
-            assertEqual(std::get<IntValue>(rec.fields.at("0")->data).value, int64_t(1));
+            auto& var = std::get<VariantValue>(result->data);
+            assertEqual(var.tag, std::string("Just"));
+            assertEqual(std::get<IntValue>(var.args.at(0)->data).value, int64_t(1));
         });
 
         it("get returns None when missing and no default given", []() {

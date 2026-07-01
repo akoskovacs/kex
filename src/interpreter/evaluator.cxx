@@ -568,40 +568,37 @@ auto Evaluator::eval(const ast::Expr& expr) -> ValuePtr {
             return callFunction(node.name, std::move(args), std::move(namedArgs), expr.location);
         }
         else if constexpr (std::is_same_v<T, ast::MethodCall>) {
-            auto receiver = node.receiver ? eval(*node.receiver) : Value::none();
-
-            // Namespace access: empty-record namespace placeholders (File, IO,
-            // record-static namespaces like Vector2D) OR a bare UpperIdentifier
-            // receiver that isn't bound to anything (Stream, Math, etc.).
-            //
-            // The UpperIdentifier case matters: without it, an unresolved
-            // namespace identifier evaluates (via ast::UpperIdentifier's eval
-            // fallback) to an Atom, which would otherwise fall through to the
-            // generic UFCS path below and get silently prepended as args[0],
-            // corrupting calls like Stream.Sequence(from: 0) { ... }.take(3)
-            // ("Cannot add Atom and Int"). Treating it as a namespace call
-            // instead means it either dispatches correctly (if a matching
-            // mangled or plain function exists) or fails with a clear
-            // "Undefined function" error — never silent corruption.
+            // Pre-check: if the receiver is a bare UpperIdentifier that isn't
+            // in the environment and isn't a known variant, treat it as a
+            // namespace call WITHOUT evaluating the receiver — so that an
+            // unknown name like `Stream` or `NotANamespace` becomes a namespace
+            // dispatch rather than throwing "Undefined identifier" here.
+            // This must run before eval(*node.receiver) to avoid the throw.
             std::string namespaceName;
             bool isNamespaceCall = false;
-            if (auto* rec = std::get_if<RecordValue>(&receiver->data)) {
-                if (rec->fields.empty()) {
-                    isNamespaceCall = true;
-                    namespaceName = rec->typeName;
-                }
-            }
-            if (!isNamespaceCall) {
+            if (node.receiver) {
                 if (auto* upperIdent = std::get_if<ast::UpperIdentifier>(&node.receiver->kind)) {
-                    // A known zero-arg ADT variant tag (Nothing, Fizz, ...)
-                    // is a value being used as a UFCS receiver, not a
-                    // namespace — let it fall through to the generic UFCS
-                    // path below (as an Atom) so receiverType resolution
-                    // there can map it to its declaring type.
                     bool isKnownVariant = m_variantParent.count(upperIdent->name) > 0;
                     if (!isKnownVariant && !m_env->get(upperIdent->name)) {
                         isNamespaceCall = true;
                         namespaceName = upperIdent->name;
+                    }
+                }
+            }
+
+            auto receiver = (!isNamespaceCall && node.receiver) ? eval(*node.receiver) : Value::none();
+
+            // Namespace access: ModuleValue (registered modules like IO, Math,
+            // File, Integer) or empty-record placeholders for user record types
+            // used as static-method namespaces (Vector2D, etc.).
+            if (!isNamespaceCall) {
+                if (auto* mod = std::get_if<ModuleValue>(&receiver->data)) {
+                    isNamespaceCall = true;
+                    namespaceName = mod->name;
+                } else if (auto* rec = std::get_if<RecordValue>(&receiver->data)) {
+                    if (rec->fields.empty()) {
+                        isNamespaceCall = true;
+                        namespaceName = rec->typeName;
                     }
                 }
             }
@@ -659,8 +656,6 @@ auto Evaluator::eval(const ast::Expr& expr) -> ValuePtr {
                 receiverType = rec->typeName;
             } else if (auto* var = std::get_if<VariantValue>(&receiver->data)) {
                 receiverType = var->tag;
-            } else if (auto* atom = std::get_if<AtomValue>(&receiver->data)) {
-                receiverType = atom->name;
             } else if (std::holds_alternative<ListValue>(receiver->data)) {
                 receiverType = "List";
             } else if (std::holds_alternative<MapValue>(receiver->data)) {
@@ -1111,12 +1106,14 @@ auto Evaluator::eval(const ast::Expr& expr) -> ValuePtr {
             throw NextException{};
         }
         else if constexpr (std::is_same_v<T, ast::UpperIdentifier>) {
-            // Look up in environment first (records, namespaces, ALL_CAPS
-            // constants like `let MAX_RETRIES = 3`)
+            // Look up in environment first (variants, modules, record namespaces,
+            // ALL_CAPS constants like `let MAX_RETRIES = 3`).
+            // All valid capitalized names (declared variants, stdlib modules,
+            // user record types) are registered in the environment at
+            // declaration time. An unknown name here is a real error.
             auto val = m_env->get(node.name);
             if (val) return autoCallZeroArgConstant(node.name, val);
-            // Otherwise return as type tag (atom) for pattern matching
-            return Value::atom(node.name);
+            throw RuntimeError("Undefined identifier: " + node.name, expr.location);
         }
         else if constexpr (std::is_same_v<T, ast::ErrorNode>) {
             throw RuntimeError("Attempted to evaluate a parse error node: " + node.message,
@@ -1520,10 +1517,6 @@ auto Evaluator::matchPattern(const ast::Pattern& pattern, const ValuePtr& value)
                 if (auto* var = std::get_if<VariantValue>(&value->data)) {
                     if (var->tag == pat.name && var->args.empty()) return true;
                 }
-                // Backward compat: genuine atoms used as type tags (Phase 4 removes this)
-                if (auto* atom = std::get_if<AtomValue>(&value->data)) {
-                    if (atom->name == pat.name) return true;
-                }
 
                 // Match type names as type patterns (for runtime type checking).
                 // These `if (holds_alternative) return true;` rather than
@@ -1567,7 +1560,7 @@ auto Evaluator::matchPattern(const ast::Pattern& pattern, const ValuePtr& value)
                 }
                 return true;
             }
-            // Backward compat: legacy RecordValue constructors (Phase 4 removes this)
+            // RecordValue constructors for user-defined records (not ADT variants)
             if (auto* rec = std::get_if<RecordValue>(&value->data)) {
                 if (rec->typeName != pat.name) return false;
                 if (rec->fields.size() != pat.args.size()) return false;

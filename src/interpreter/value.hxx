@@ -36,6 +36,8 @@ struct VariantValue {
     std::vector<ValuePtr> args;  // payload — empty for zero-arg
 };
 
+struct ModuleValue { std::string name; };  // "Math", "IO", "File"
+
 struct ListValue { std::vector<ValuePtr> elements; };
 struct TupleValue { std::vector<ValuePtr> elements; };
 struct MapValue { std::vector<std::pair<ValuePtr, ValuePtr>> entries; };
@@ -83,6 +85,7 @@ struct Value {
         BoolValue,
         AtomValue,
         VariantValue,
+        ModuleValue,
         ListValue,
         TupleValue,
         MapValue,
@@ -104,6 +107,7 @@ struct Value {
     static auto boolean(bool v) -> ValuePtr;
     static auto atom(std::string name) -> ValuePtr;
     static auto variant(std::string tag, std::string parentType = "", std::vector<ValuePtr> args = {}) -> ValuePtr;
+    static auto module(std::string name) -> ValuePtr;
     static auto list(std::vector<ValuePtr> elems) -> ValuePtr;
     static auto tuple(std::vector<ValuePtr> elems) -> ValuePtr;
     static auto record(std::string type, std::unordered_map<std::string, ValuePtr> fields) -> ValuePtr;
