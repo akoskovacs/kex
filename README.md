@@ -15,15 +15,15 @@ record Vector2D do
 end
 
 make Vector2D do
-  let +(other: Vector2D) -> Vector2D do
+  let +(other: This) -> This do
     return Vector2D { x: @x + other.x, y: @y + other.y }
   end
 
-  let *(factor: Float) -> Vector2D do
+  let *(factor: Float) -> This do
     return Vector2D { x: @x * factor, y: @y * factor }
   end
 
-  let near?(other: Vector2D) -> Bool do
+  let near?(other: This) -> Bool do
     (@x - other.x).abs < 0.01 && (@y - other.y).abs < 0.01
   end
 
@@ -94,15 +94,15 @@ record Vector3D do
 end
 
 make Vector2D do
-  let +(other: Vector2D) -> Vector2D do
+  let +(other: This) -> This do
     return Vector2D { x: @x + other.x, y: @y + other.y }
   end
 
-  let *(factor: Float) -> Vector2D do
+  let *(factor: Float) -> This do
     return Vector2D { x: @x * factor, y: @y * factor }
   end
 
-  let dot(other: Vector2D) -> Float do
+  let dot(other: This) -> Float do
     return @x * other.x + @y * other.y
   end
 
@@ -112,7 +112,7 @@ make Vector2D do
 end
 
 make Vector3D do
-  let +(other: Vector3D) -> Vector3D do
+  let +(other: This) -> This do
     return Vector3D { x: @x + other.x, y: @y + other.y, z: @z + other.z }
   end
 
