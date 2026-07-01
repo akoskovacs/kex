@@ -112,14 +112,13 @@ auto Evaluator::execTypeDef(const ast::TypeDef& def) -> void {
             execFunctionDef(*func, def.name);
         }
     }
-    // Register sum-type variant constructors with args (Just(A), Ok(A),
-    // Error(E), Number(Int), ...) as callable functions that build a
-    // RecordValue with positional fields "0", "1", .... Zero-arg variants
-    // (Fizz, Nothing, ...) need no constructor registration — they already
-    // work as values and as patterns via the UpperIdentifier-as-Atom
-    // fallback in eval()/matchPattern(). Both kinds still need an entry in
-    // m_variantParent so `make TypeName do ... end` method dispatch can map
-    // the variant tag back to the declaring type.
+    // Register sum-type variant constructors. Zero-arg variants (Fizz,
+    // Nothing, ...) are stored directly as VariantValue in the environment.
+    // With-arg constructors (Just(A), Ok(A), ...) are registered as
+    // callable functions that build a VariantValue with a positional args
+    // list. Both kinds get an entry in m_variantParent so `make TypeName
+    // do ... end` method dispatch can map the variant tag back to the
+    // declaring type.
     if (def.variants) {
         for (const auto& variant : *def.variants) {
             if (!variant) continue;
@@ -138,15 +137,18 @@ auto Evaluator::execTypeDef(const ast::TypeDef& def) -> void {
 
             m_variantParent[variantName] = def.name;
 
-            if (arity == 0) continue;
+            if (arity == 0) {
+                m_env->define(variantName, Value::variant(variantName, def.name));
+                continue;
+            }
             auto val = std::make_shared<Value>();
             val->data = FunctionValue{variantName,
-                [variantName, arity](std::vector<ValuePtr> args) -> ValuePtr {
-                    std::unordered_map<std::string, ValuePtr> fields;
+                [variantName, defName = def.name, arity](std::vector<ValuePtr> args) -> ValuePtr {
+                    std::vector<ValuePtr> varArgs;
                     for (size_t i = 0; i < arity; i++) {
-                        fields[std::to_string(i)] = i < args.size() ? args[i] : Value::none();
+                        varArgs.push_back(i < args.size() ? args[i] : Value::none());
                     }
-                    return Value::record(variantName, std::move(fields));
+                    return Value::variant(variantName, defName, std::move(varArgs));
                 }};
             m_env->define(variantName, val);
         }
@@ -655,11 +657,9 @@ auto Evaluator::eval(const ast::Expr& expr) -> ValuePtr {
             std::string receiverType;
             if (auto* rec = std::get_if<RecordValue>(&receiver->data)) {
                 receiverType = rec->typeName;
+            } else if (auto* var = std::get_if<VariantValue>(&receiver->data)) {
+                receiverType = var->tag;
             } else if (auto* atom = std::get_if<AtomValue>(&receiver->data)) {
-                // Zero-arg ADT variant tags (Nothing, Fizz, ...) are Atoms —
-                // needed so `make TypeName do ... end` methods registered
-                // under "TypeName::method" can be found via m_variantParent
-                // below even though the value itself carries no type name.
                 receiverType = atom->name;
             } else if (std::holds_alternative<ListValue>(receiver->data)) {
                 receiverType = "List";
@@ -1516,7 +1516,11 @@ auto Evaluator::matchPattern(const ast::Pattern& pattern, const ValuePtr& value)
             if (pat.name == "None") return std::holds_alternative<NoneValue>(value->data);
 
             if (pat.args.empty()) {
-                // Match type tag atoms: to(String) passes atom("String")
+                // Match zero-arg variant constructors (Nothing, Less, Fizz, ...)
+                if (auto* var = std::get_if<VariantValue>(&value->data)) {
+                    if (var->tag == pat.name && var->args.empty()) return true;
+                }
+                // Backward compat: genuine atoms used as type tags (Phase 4 removes this)
                 if (auto* atom = std::get_if<AtomValue>(&value->data)) {
                     if (atom->name == pat.name) return true;
                 }
@@ -1555,9 +1559,15 @@ auto Evaluator::matchPattern(const ast::Pattern& pattern, const ValuePtr& value)
             }
 
             // Constructor with args: Just(x), Ok(x), Error(e), Number(n), etc.
-            // Constructor calls build a RecordValue with positional fields
-            // keyed "0", "1", ... (see the variant-constructor registration
-            // in registerBuiltins / execTopLevel's TypeDef handling).
+            if (auto* var = std::get_if<VariantValue>(&value->data)) {
+                if (var->tag != pat.name) return false;
+                if (var->args.size() != pat.args.size()) return false;
+                for (size_t i = 0; i < pat.args.size(); i++) {
+                    if (!matchPattern(*pat.args[i], var->args[i])) return false;
+                }
+                return true;
+            }
+            // Backward compat: legacy RecordValue constructors (Phase 4 removes this)
             if (auto* rec = std::get_if<RecordValue>(&value->data)) {
                 if (rec->typeName != pat.name) return false;
                 if (rec->fields.size() != pat.args.size()) return false;

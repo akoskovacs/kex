@@ -768,14 +768,14 @@ int main() {
                 "  Just(5).map { |x| x * 2 }\n"
                 "end\n"
             );
-            auto& rec = std::get<RecordValue>(result->data);
-            assertEqual(rec.typeName, std::string("Just"));
-            assertEqual(std::get<IntValue>(rec.fields.at("0")->data).value, int64_t(10));
+            auto& var = std::get<VariantValue>(result->data);
+            assertEqual(var.tag, std::string("Just"));
+            assertEqual(std::get<IntValue>(var.args.at(0)->data).value, int64_t(10));
         });
 
         it("make TypeName dispatches on a zero-arg variant (regression)", []() {
-            // Same as above, but for the zero-arg side (Nothing is an Atom,
-            // not a RecordValue) — needs the AtomValue receiverType case.
+            // Zero-arg variant (Nothing) is now a VariantValue, dispatched
+            // via the VariantValue receiverType case in the dispatch chain.
             auto result = run(
                 "type Option<A> = Just(A) | Nothing\n"
                 "make Option<A> do\n"
@@ -786,7 +786,8 @@ int main() {
                 "  Nothing.map { |x| x * 2 }\n"
                 "end\n"
             );
-            assertTrue(std::get<AtomValue>(result->data).name == "Nothing");
+            auto& var = std::get<VariantValue>(result->data);
+            assertTrue(var.tag == "Nothing");
         });
     });
 
@@ -1198,7 +1199,7 @@ int main() {
 
         it("Less/Equal/Greater are stdlib builtins", []() {
             auto result = run("main do Less end\n");
-            assertEqual(std::get<AtomValue>(result->data).name, std::string("Less"));
+            assertEqual(std::get<VariantValue>(result->data).tag, std::string("Less"));
         });
 
         it("sort uses Comparable.compare for user records", []() {

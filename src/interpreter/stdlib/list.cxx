@@ -440,11 +440,21 @@ auto Evaluator::registerListBuiltins() -> void {
         if (auto* ac = std::get_if<CharValue>(&a->data))
             if (auto* bc = std::get_if<CharValue>(&b->data))
                 return ac->value < bc->value ? "Less" : (ac->value > bc->value ? "Greater" : "Equal");
-        if (auto* rec = std::get_if<RecordValue>(&a->data)) {
+        auto dispatchCompare = [&](const std::string& typeName) -> std::string {
             try {
-                auto r = callFunction(rec->typeName + "::compare", {a, b}, {}, {});
+                auto r = callFunction(typeName + "::compare", {a, b}, {}, {});
+                if (auto* var = std::get_if<VariantValue>(&r->data)) return var->tag;
                 if (auto* atom = std::get_if<AtomValue>(&r->data)) return atom->name;
             } catch (...) {}
+            return "";
+        };
+        if (auto* var = std::get_if<VariantValue>(&a->data)) {
+            auto r = dispatchCompare(var->tag);
+            if (!r.empty()) return r;
+        }
+        if (auto* rec = std::get_if<RecordValue>(&a->data)) {
+            auto r = dispatchCompare(rec->typeName);
+            if (!r.empty()) return r;
         }
         return "Equal";
     };
