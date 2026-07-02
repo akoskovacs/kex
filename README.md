@@ -1,5 +1,7 @@
 # Kex
 
+[![CI](https://github.com/kexhq/kex/actions/workflows/ci.yml/badge.svg)](https://github.com/kexhq/kex/actions/workflows/ci.yml)
+
 <p align="center">
 <img src="./docs/assets/logo.png" height="340" style="align: center" />
 </p>
